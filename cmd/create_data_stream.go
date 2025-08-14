@@ -128,31 +128,26 @@ func createDataStreamCommandAction(cmd *cobra.Command, args []string) error {
 	}
 
 	if answers.Type == "logs" {
+		inputsOptions := archetype.NewInputOptions()
 		qs := []*survey.Question{
 			{
 				Name: "inputs",
 				Prompt: &survey.MultiSelect{
 					Message: "Select input types which will be used in this data stream",
-					Options: []string{
-						"aws-cloudwatch",
-						"aws-s3",
-						"azure-blob-storage",
-						"azure-eventhub",
-						"cel",
-						"entity-analytics",
-						"etw",
-						"filestream",
-						"gcp-pubsub",
-						"gcs",
-						"http_endpoint",
-						"httpjson",
-						"journald",
-						"netflow",
-						"redis",
-						"tcp",
-						"udp",
-						"winlog",
-					},
+					Options: inputsOptions.Titles(),
+				},
+				Transform: func(ans interface{}) interface{} {
+					// Convert user friendly titles back to internal names
+					answers := ans.([]survey.OptionAnswer)
+					res := make([]survey.OptionAnswer, len(answers))
+					for i, answer := range answers {
+						name := inputsOptions.GetName(answer.Value)
+						res[i] = survey.OptionAnswer{
+							Value: name,
+							Index: answer.Index,
+						}
+					}
+					return res
 				},
 			},
 		}
