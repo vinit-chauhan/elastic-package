@@ -47,7 +47,7 @@ func CreateDataStream(dataStreamDescriptor DataStreamDescriptor) error {
 	}
 
 	logger.Debugf("Write agent stream")
-	err = renderResourceFile(dataStreamAgentStreamTemplate, &dataStreamDescriptor, filepath.Join(dataStreamDir, "agent", "stream", "stream.yml.hbs"))
+	err = populateAgentFile(&dataStreamDescriptor, filepath.Join(dataStreamDir, "agent", "stream"))
 	if err != nil {
 		return fmt.Errorf("can't render agent stream: %w", err)
 	}

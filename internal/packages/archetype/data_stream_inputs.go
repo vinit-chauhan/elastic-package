@@ -6,6 +6,8 @@ package archetype
 
 import (
 	"fmt"
+	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -76,4 +78,20 @@ func unpackVars(output *[]packages.Variable, input []InputVariable) {
 
 		*output = append(*output, newVar)
 	}
+}
+
+func populateAgentFile(dataStreamDescriptor *DataStreamDescriptor, targetPath string) error {
+	for _, stream := range dataStreamDescriptor.Manifest.Streams {
+		inputName := strings.ReplaceAll(stream.Input, "-", "_")
+		content, err := agentTemplates.ReadFile(filepath.Join("_static", "agent", inputName+".yml.hbs"))
+		if err != nil {
+			return fmt.Errorf("can't read agent file from embedded resources: %w", err)
+		}
+
+		err = writeRawResourceFile(content, filepath.Join(targetPath, inputName+".yml.hbs"))
+		if err != nil {
+			return fmt.Errorf("can't write agent file: %w", err)
+		}
+	}
+	return nil
 }

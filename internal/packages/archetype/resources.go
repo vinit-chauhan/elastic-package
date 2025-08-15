@@ -4,7 +4,9 @@
 
 package archetype
 
-import _ "embed"
+import (
+	"embed"
+)
 
 // Common Package Templates
 
@@ -43,9 +45,6 @@ var inputAgentConfigTemplate string
 
 // Data Stream templates
 
-//go:embed _static/dataStream-agent-stream.yml.tmpl
-var dataStreamAgentStreamTemplate string
-
 //go:embed _static/dataStream-elasticsearch-ingest-pipeline.yml.tmpl
 var dataStreamElasticsearchIngestPipelineTemplate string
 
@@ -54,3 +53,6 @@ var dataStreamManifestTemplate string
 
 //go:embed _static/input-variables.yml
 var inputVariables string
+
+//go:embed _static/agent/*
+var agentTemplates embed.FS
