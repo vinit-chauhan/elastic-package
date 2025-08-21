@@ -47,9 +47,34 @@ func CreateDataStream(dataStreamDescriptor DataStreamDescriptor) error {
 	}
 
 	logger.Debugf("Write agent stream")
-	err = renderResourceFile(dataStreamAgentStreamTemplate, &dataStreamDescriptor, filepath.Join(dataStreamDir, "agent", "stream", "stream.yml.hbs"))
-	if err != nil {
-		return fmt.Errorf("can't render agent stream: %w", err)
+	if dataStreamDescriptor.Manifest.Type == "logs" {
+
+		if len(dataStreamDescriptor.Manifest.Streams) == 0 {
+			err = renderResourceFile(dataStreamAgentStreamTemplate, &dataStreamDescriptor, filepath.Join(dataStreamDir, "agent", "stream", "stream.yml.hbs"))
+			if err != nil {
+				return fmt.Errorf("can't render agent stream: %w", err)
+			}
+		}
+
+		for _, stream := range dataStreamDescriptor.Manifest.Streams {
+			agentDef, exists := agentResources[stream.Input]
+			if !exists {
+				return fmt.Errorf("can't find agent definition for input %q", stream.Input)
+			}
+
+			fileName := inputNameToFileName[stream.Input]
+
+			err = writeRawResourceFile([]byte(agentDef), filepath.Join(dataStreamDir, "agent", "stream", fmt.Sprintf("%s.yml.hbs", fileName)))
+			if err != nil {
+				return fmt.Errorf("can't write agent stream file for input %q: %w", stream.Input, err)
+			}
+		}
+	} else {
+		err = renderResourceFile(dataStreamAgentStreamTemplate, &dataStreamDescriptor, filepath.Join(dataStreamDir, "agent", "stream", "stream.yml.hbs"))
+		if err != nil {
+			return fmt.Errorf("can't render agent stream: %w", err)
+		}
+
 	}
 
 	if dataStreamDescriptor.Manifest.Type == "logs" {

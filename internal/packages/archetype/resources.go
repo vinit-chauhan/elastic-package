@@ -128,3 +128,94 @@ var inputResources = []string{
 	inputUdp,
 	inputWinlog,
 }
+
+// manifest files
+var agentResources = map[string]string{
+	"aws-cloudwatch":     agentAwsCloudwatch,
+	"aws-s3":             agentAwsS3,
+	"azure-blob-storage": agentAzureBlobStorage,
+	"azure-eventhub":     agentAzureEventhub,
+	"cel":                agentCel,
+	"entity-analytics":   "",
+	"etw":                "",
+	"filestream":         agentFilestream,
+	"gcp-pubsub":         agentGcpPubSub,
+	"gcs":                agentGcs,
+	"http_endpoint":      agentHttpEndpoint,
+	"httpjson":           agentHttpJson,
+	"journald":           agentJournald,
+	"netflow":            agentNetflow,
+	"redis":              agentRedis,
+	"tcp":                agentTcp,
+	"udp":                agentUdp,
+	"winlog":             agentWinlog,
+}
+
+var inputNameToFileName = map[string]string{
+	"aws-cloudwatch":     "aws_cloudwatch",
+	"aws-s3":             "aws_s3",
+	"azure-blob-storage": "azure_blob_storage",
+	"azure-eventhub":     "azure_eventhub",
+	"cel":                "cel",
+	"entity-analytics":   "entity_analytics",
+	"etw":                "etw",
+	"filestream":         "filestream",
+	"gcp-pubsub":         "gcp_pubsub",
+	"gcs":                "gcs",
+	"http_endpoint":      "http_endpoint",
+	"httpjson":           "httpjson",
+	"journald":           "journald",
+	"netflow":            "netflow",
+	"redis":              "redis",
+	"tcp":                "tcp",
+	"udp":                "udp",
+	"winlog":             "winlog",
+}
+
+//go:embed _static/agent/aws_cloudwatch.yml.hbs
+var agentAwsCloudwatch string
+
+//go:embed _static/agent/aws_s3.yml.hbs
+var agentAwsS3 string
+
+//go:embed _static/agent/azure_blob_storage.yml.hbs
+var agentAzureBlobStorage string
+
+//go:embed _static/agent/azure_eventhub.yml.hbs
+var agentAzureEventhub string
+
+//go:embed _static/agent/cel.yml.hbs
+var agentCel string
+
+//go:embed _static/agent/filestream.yml.hbs
+var agentFilestream string
+
+//go:embed _static/agent/gcp_pubsub.yml.hbs
+var agentGcpPubSub string
+
+//go:embed _static/agent/gcs.yml.hbs
+var agentGcs string
+
+//go:embed _static/agent/http_endpoint.yml.hbs
+var agentHttpEndpoint string
+
+//go:embed _static/agent/httpjson.yml.hbs
+var agentHttpJson string
+
+//go:embed _static/agent/journald.yml.hbs
+var agentJournald string
+
+//go:embed _static/agent/netflow.yml.hbs
+var agentNetflow string
+
+//go:embed _static/agent/redis.yml.hbs
+var agentRedis string
+
+//go:embed _static/agent/tcp.yml.hbs
+var agentTcp string
+
+//go:embed _static/agent/udp.yml.hbs
+var agentUdp string
+
+//go:embed _static/agent/winlog.yml.hbs
+var agentWinlog string
