@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/elastic/elastic-package/internal/formatter"
 	"github.com/elastic/elastic-package/internal/logger"
@@ -57,14 +58,13 @@ func CreateDataStream(dataStreamDescriptor DataStreamDescriptor) error {
 		}
 
 		for _, stream := range dataStreamDescriptor.Manifest.Streams {
-			agentDef, exists := agentResources[stream.Input]
-			if !exists {
-				return fmt.Errorf("can't find agent definition for input %q", stream.Input)
+			agentTemplate, err := loadRawAgentTemplate(stream.Input)
+			if err != nil {
+				return fmt.Errorf("can't find agent definition for input %q: %w", stream.Input, err)
 			}
 
-			fileName := inputNameToFileName[stream.Input]
-
-			err = writeRawResourceFile([]byte(agentDef), filepath.Join(dataStreamDir, "agent", "stream", fmt.Sprintf("%s.yml.hbs", fileName)))
+			fileName := fmt.Sprintf("%s.yml.hbs", strings.ReplaceAll(stream.Input, "-", "_"))
+			err = writeRawResourceFile([]byte(agentTemplate), filepath.Join(dataStreamDir, "agent", "stream", fileName))
 			if err != nil {
 				return fmt.Errorf("can't write agent stream file for input %q: %w", stream.Input, err)
 			}
