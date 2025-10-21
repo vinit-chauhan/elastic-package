@@ -1,0 +1,55 @@
+package filter
+
+import (
+	"github.com/elastic/elastic-package/internal/cobraext"
+	"github.com/elastic/elastic-package/internal/packages"
+	"github.com/spf13/cobra"
+)
+
+type CategoryFlag struct {
+	FilterFlag
+
+	values map[string]struct{}
+}
+
+func (f *CategoryFlag) Parse(cmd *cobra.Command) error {
+	category, err := cmd.Flags().GetString(cobraext.FilterCategoriesFlagName)
+	if err != nil {
+		return cobraext.FlagParsingError(err, cobraext.FilterCategoriesFlagName)
+	}
+	if category == "" {
+		return nil
+	}
+
+	f.values = splitAndTrim(category, ",")
+	f.isApplied = true
+	return nil
+}
+
+func (f *CategoryFlag) Validate() error {
+	return nil
+}
+
+func (f *CategoryFlag) Matches(pkg packages.PackageManifest) bool {
+	return hasAnyMatch(f.values, pkg.Categories)
+}
+
+func (f *CategoryFlag) ApplyTo(pkgs []packages.PackageManifest) (filtered []packages.PackageManifest, err error) {
+	for _, pkg := range pkgs {
+		if f.Matches(pkg) {
+			filtered = append(filtered, pkg)
+		}
+	}
+	return filtered, err
+}
+
+func initCategoryFlag() *CategoryFlag {
+	return &CategoryFlag{
+		FilterFlag: FilterFlag{
+			name:         cobraext.FilterCategoriesFlagName,
+			description:  cobraext.FilterCategoriesFlagDescription,
+			shorthand:    "",
+			defaultValue: "",
+		},
+	}
+}
