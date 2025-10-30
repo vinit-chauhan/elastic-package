@@ -110,6 +110,16 @@ func NewDocumentationAgent(provider LLMProvider, packageRoot string, targetDocFi
 	// Create tools for package operations
 	tools := PackageTools(packageRoot)
 
+	// Load the mcp file
+	servers := MCPTools()
+	if servers != nil {
+		for _, srv := range servers.Servers {
+			if len(srv.Tools) > 0 {
+				tools = append(tools, srv.Tools...)
+			}
+		}
+	}
+
 	// Create the agent
 	agent := NewAgent(provider, tools)
 
@@ -341,6 +351,7 @@ func (d *DocumentationAgent) executeTaskWithLogging(ctx context.Context, prompt 
 	result, err := d.agent.ExecuteTask(ctx, prompt)
 	if err != nil {
 		fmt.Println("❌ Agent task failed")
+		fmt.Printf("❌ result is %v\n", result)
 		return nil, fmt.Errorf("agent task failed: %w", err)
 	}
 

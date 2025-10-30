@@ -62,6 +62,7 @@ func (a *Agent) ExecuteTask(ctx context.Context, prompt string) (*TaskResult, er
 		// Build the full prompt with conversation history
 		fullPrompt := a.buildPrompt(conversation)
 
+		fmt.Printf("iterating number %d: we have %d tools\n", i, len(a.tools))
 		// Get response from LLM
 		response, err := a.provider.GenerateResponse(ctx, fullPrompt, a.tools)
 		if err != nil {
