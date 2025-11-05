@@ -2,7 +2,7 @@
 // or more contributor license agreements. Licensed under the Elastic License;
 // you may not use this file except in compliance with the Elastic License.
 
-package llmagent
+package ui
 
 import (
 	_ "embed"
@@ -100,9 +100,9 @@ func openURL(urlOrPath string) error {
 	return cmd.Start()
 }
 
-// tryBrowserPreview attempts to display the markdown content in a browser
+// TryBrowserPreview attempts to display the markdown content in a browser
 // Returns true if successful, false if it should fall back to terminal display
-func tryBrowserPreview(markdownContent string) bool {
+func TryBrowserPreview(markdownContent string) bool {
 	// Check if browser is available
 	if !isBrowserAvailable() {
 		return false

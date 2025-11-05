@@ -13,7 +13,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/elastic/elastic-package/internal/cobraext"
-	"github.com/elastic/elastic-package/internal/llmagent"
+	"github.com/elastic/elastic-package/internal/llmagent/docs"
+	"github.com/elastic/elastic-package/internal/llmagent/providers"
 	"github.com/elastic/elastic-package/internal/packages"
 	"github.com/elastic/elastic-package/internal/profile"
 	"github.com/elastic/elastic-package/internal/tui"
@@ -258,11 +259,11 @@ func updateDocumentationCommandAction(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create the LLM provider based on available API keys/endpoints
-	var provider llmagent.LLMProvider
+	var provider providers.LLMProvider
 	if bedrockAPIKey != "" {
 		region := getConfigValue(profile, "BEDROCK_REGION", "llm.bedrock.region", "us-east-1")
 		modelID := getConfigValue(profile, "BEDROCK_MODEL", "llm.bedrock.model", "anthropic.claude-3-5-sonnet-20241022-v2:0")
-		provider = llmagent.NewBedrockProvider(llmagent.BedrockConfig{
+		provider = providers.NewBedrockProvider(providers.BedrockConfig{
 			APIKey:    bedrockAPIKey,
 			Region:    region,
 			ModelID:   modelID,
@@ -271,7 +272,7 @@ func updateDocumentationCommandAction(cmd *cobra.Command, args []string) error {
 		cmd.Printf("Using Amazon Bedrock provider with region: %s, model: %s\n", region, modelID)
 	} else if googleAPIKey != "" {
 		modelID := getConfigValue(profile, "GEMINI_MODEL", "llm.gemini.model", "gemini-2.5-pro")
-		provider = llmagent.NewGeminiProvider(llmagent.GeminiConfig{
+		provider = providers.NewGeminiProvider(providers.GeminiConfig{
 			APIKey:  googleAPIKey,
 			ModelID: modelID,
 		})
@@ -279,7 +280,7 @@ func updateDocumentationCommandAction(cmd *cobra.Command, args []string) error {
 	} else if localEndpoint != "" {
 		modelID := getConfigValue(profile, "LOCAL_LLM_MODEL", "llm.local.model", "llama2")
 		localAPIKey := getConfigValue(profile, "LOCAL_LLM_API_KEY", "llm.local.api_key", "")
-		provider = llmagent.NewLocalProvider(llmagent.LocalConfig{
+		provider = providers.NewLocalProvider(providers.LocalConfig{
 			Endpoint: localEndpoint,
 			ModelID:  modelID,
 			APIKey:   localAPIKey,
@@ -290,7 +291,7 @@ func updateDocumentationCommandAction(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create the documentation agent
-	docAgent, err := llmagent.NewDocumentationAgent(provider, packageRoot, targetDocFile, profile)
+	docAgent, err := docs.NewDocumentationAgent(provider, packageRoot, targetDocFile, profile)
 	if err != nil {
 		return fmt.Errorf("failed to create documentation agent: %w", err)
 	}

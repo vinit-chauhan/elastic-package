@@ -2,18 +2,20 @@
 // or more contributor license agreements. Licensed under the Elastic License;
 // you may not use this file except in compliance with the Elastic License.
 
-package llmagent
+package agent
 
 import (
 	"context"
 	"fmt"
 	"strings"
+
+	"github.com/elastic/elastic-package/internal/llmagent/providers"
 )
 
 // Agent represents an LLM agent that can use tools
 type Agent struct {
-	provider LLMProvider
-	tools    []Tool
+	provider providers.LLMProvider
+	tools    []providers.Tool
 }
 
 // ToolExecutionInfo tracks information about recent tool executions for error analysis
@@ -39,7 +41,7 @@ type ConversationEntry struct {
 }
 
 // NewAgent creates a new LLM agent
-func NewAgent(provider LLMProvider, tools []Tool) *Agent {
+func NewAgent(provider providers.LLMProvider, tools []providers.Tool) *Agent {
 	return &Agent{
 		provider: provider,
 		tools:    tools,
@@ -166,7 +168,7 @@ func (a *Agent) ExecuteTask(ctx context.Context, prompt string) (*TaskResult, er
 }
 
 // executeTool executes a specific tool call
-func (a *Agent) executeTool(ctx context.Context, toolCall ToolCall) (*ToolResult, error) {
+func (a *Agent) executeTool(ctx context.Context, toolCall providers.ToolCall) (*providers.ToolResult, error) {
 	// Find the tool
 	for _, tool := range a.tools {
 		if tool.Name == toolCall.Name {

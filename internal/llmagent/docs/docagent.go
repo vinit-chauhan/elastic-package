@@ -2,11 +2,10 @@
 // or more contributor license agreements. Licensed under the Elastic License;
 // you may not use this file except in compliance with the Elastic License.
 
-package llmagent
+package docs
 
 import (
 	"context"
-	_ "embed"
 	"errors"
 	"fmt"
 	"os"
@@ -16,134 +15,84 @@ import (
 	"github.com/elastic/elastic-package/internal/configuration/locations"
 	"github.com/elastic/elastic-package/internal/docs"
 	"github.com/elastic/elastic-package/internal/environment"
+	"github.com/elastic/elastic-package/internal/llmagent/agent"
+	"github.com/elastic/elastic-package/internal/llmagent/mcp"
+	"github.com/elastic/elastic-package/internal/llmagent/providers"
+	"github.com/elastic/elastic-package/internal/llmagent/tools"
+	"github.com/elastic/elastic-package/internal/llmagent/ui"
 	"github.com/elastic/elastic-package/internal/logger"
 	"github.com/elastic/elastic-package/internal/packages"
 	"github.com/elastic/elastic-package/internal/profile"
 	"github.com/elastic/elastic-package/internal/tui"
 )
 
-//go:embed _static/initial_prompt.txt
-var initialPrompt string
+type PromptType int
 
-//go:embed _static/revision_prompt.txt
-var revisionPrompt string
-
-//go:embed _static/limit_hit_prompt.txt
-var limitHitPrompt string
-
-// loadPromptFile loads a prompt file from external location if enabled, otherwise uses embedded content
-func loadPromptFile(filename string, embeddedContent string, profile *profile.Profile) string {
-	// Check if external prompt files are enabled
-	envVar := environment.WithElasticPackagePrefix("LLM_EXTERNAL_PROMPTS")
-	configKey := "llm.external_prompts"
-	useExternal := getConfigValue(profile, envVar, configKey, "false") == "true"
-
-	if !useExternal {
-		return embeddedContent
-	}
-
-	// Check in profile directory first if profile is available
-	if profile != nil {
-		profilePath := filepath.Join(profile.ProfilePath, "prompts", filename)
-		if content, err := os.ReadFile(profilePath); err == nil {
-			logger.Debugf("Loaded external prompt file from profile: %s", profilePath)
-			return string(content)
-		}
-	}
-
-	// Try to load from .elastic-package directory
-	loc, err := locations.NewLocationManager()
-	if err != nil {
-		logger.Debugf("Failed to get location manager, using embedded prompt: %v", err)
-		return embeddedContent
-	}
-
-	// Check in .elastic-package directory
-	elasticPackagePath := filepath.Join(loc.RootDir(), "prompts", filename)
-	if content, err := os.ReadFile(elasticPackagePath); err == nil {
-		logger.Debugf("Loaded external prompt file from .elastic-package: %s", elasticPackagePath)
-		return string(content)
-	}
-
-	// Fall back to embedded content
-	logger.Debugf("External prompt file not found, using embedded content for: %s", filename)
-	return embeddedContent
-}
-
-// getConfigValue retrieves a configuration value with fallback from environment variable to profile config
-func getConfigValue(profile *profile.Profile, envVar, configKey, defaultValue string) string {
-	// First check environment variable
-	if envValue := os.Getenv(envVar); envValue != "" {
-		return envValue
-	}
-
-	// Then check profile configuration
-	if profile != nil {
-		return profile.Config(configKey, defaultValue)
-	}
-
-	return defaultValue
-}
-
-// readServiceInfo reads the service_info.md file if it exists in docs/knowledge_base/
-// Returns the content and whether the file exists
-func (d *DocumentationAgent) readServiceInfo() (string, bool) {
-	serviceInfoPath := filepath.Join(d.packageRoot, "docs", "knowledge_base", "service_info.md")
-	content, err := os.ReadFile(serviceInfoPath)
-	if err != nil {
-		return "", false
-	}
-	return string(content), true
-}
+const (
+	PromptTypeInitial PromptType = iota
+	PromptTypeRevision
+	PromptTypeSectionBased
+)
 
 // DocumentationAgent handles documentation updates for packages
 type DocumentationAgent struct {
-	agent                 *Agent
+	agent                 *agent.Agent
 	packageRoot           string
 	targetDocFile         string // Target documentation file (e.g., README.md, vpc.md)
 	profile               *profile.Profile
 	originalReadmeContent *string // Stores original content for restoration on cancel
+	manifest              *packages.PackageManifest
+}
+
+type PromptContext struct {
+	Manifest       *packages.PackageManifest
+	TargetDocFile  string
+	Changes        string
+	ServiceInfo    string
+	HasServiceInfo bool
 }
 
 // NewDocumentationAgent creates a new documentation agent
-func NewDocumentationAgent(provider LLMProvider, packageRoot string, targetDocFile string, profile *profile.Profile) (*DocumentationAgent, error) {
+func NewDocumentationAgent(provider providers.LLMProvider, packageRoot string, targetDocFile string, profile *profile.Profile) (*DocumentationAgent, error) {
 	// Create tools for package operations
-	tools := PackageTools(packageRoot)
+	packageTools := tools.PackageTools(packageRoot)
 
 	// Load the mcp file
-	servers := MCPTools()
+	servers := mcp.MCPTools()
 	if servers != nil {
 		for _, srv := range servers.Servers {
 			if len(srv.Tools) > 0 {
-				tools = append(tools, srv.Tools...)
+				packageTools = append(packageTools, srv.Tools...)
 			}
 		}
 	}
 
+	//TODO: rename to avoid confusion on MCP agent vs docAgent
 	// Create the agent
-	agent := NewAgent(provider, tools)
+	llmAgent := agent.NewAgent(provider, packageTools)
+
+	manifest, err := packages.ReadPackageManifestFromPackageRoot(packageRoot)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read package manifest: %w", err)
+	}
 
 	return &DocumentationAgent{
-		agent:         agent,
+		agent:         llmAgent,
 		packageRoot:   packageRoot,
 		targetDocFile: targetDocFile,
 		profile:       profile,
+		manifest:      manifest,
 	}, nil
 }
 
 // UpdateDocumentation runs the documentation update process
 func (d *DocumentationAgent) UpdateDocumentation(ctx context.Context, nonInteractive bool) error {
-	// Read package manifest for context
-	manifest, err := packages.ReadPackageManifestFromPackageRoot(d.packageRoot)
-	if err != nil {
-		return fmt.Errorf("failed to read package manifest: %w", err)
-	}
-
 	// Backup original README content before making any changes
 	d.backupOriginalReadme()
 
 	// Create the initial prompt
-	prompt := d.buildInitialPrompt(manifest)
+	promptCtx := d.createPromptContext(d.manifest, "")
+	prompt := d.buildPrompt(PromptTypeInitial, promptCtx)
 
 	if nonInteractive {
 		return d.runNonInteractiveMode(ctx, prompt)
@@ -192,7 +141,8 @@ func (d *DocumentationAgent) ModifyDocumentation(ctx context.Context, nonInterac
 	}
 
 	// Create the revision prompt with modification instructions
-	prompt := d.buildRevisionPrompt(instructions)
+	promptCtx := d.createPromptContext(d.manifest, instructions)
+	prompt := d.buildPrompt(PromptTypeRevision, promptCtx)
 
 	if nonInteractive {
 		return d.runNonInteractiveMode(ctx, prompt)
@@ -331,8 +281,73 @@ func (d *DocumentationAgent) runInteractiveMode(ctx context.Context, prompt stri
 	}
 }
 
+// loadPromptFile loads a prompt file from external location if enabled, otherwise uses embedded content
+func loadPromptFile(filename string, embeddedContent string, profile *profile.Profile) string {
+	// Check if external prompt files are enabled
+	envVar := environment.WithElasticPackagePrefix("LLM_EXTERNAL_PROMPTS")
+	configKey := "llm.external_prompts"
+	useExternal := getConfigValue(profile, envVar, configKey, "false") == "true"
+
+	if !useExternal {
+		return embeddedContent
+	}
+
+	// Check in profile directory first if profile is available
+	if profile != nil {
+		profilePath := filepath.Join(profile.ProfilePath, "prompts", filename)
+		if content, err := os.ReadFile(profilePath); err == nil {
+			logger.Debugf("Loaded external prompt file from profile: %s", profilePath)
+			return string(content)
+		}
+	}
+
+	// Try to load from .elastic-package directory
+	loc, err := locations.NewLocationManager()
+	if err != nil {
+		logger.Debugf("Failed to get location manager, using embedded prompt: %v", err)
+		return embeddedContent
+	}
+
+	// Check in .elastic-package directory
+	elasticPackagePath := filepath.Join(loc.RootDir(), "prompts", filename)
+	if content, err := os.ReadFile(elasticPackagePath); err == nil {
+		logger.Debugf("Loaded external prompt file from .elastic-package: %s", elasticPackagePath)
+		return string(content)
+	}
+
+	// Fall back to embedded content
+	logger.Debugf("External prompt file not found, using embedded content for: %s", filename)
+	return embeddedContent
+}
+
+// getConfigValue retrieves a configuration value with fallback from environment variable to profile config
+func getConfigValue(profile *profile.Profile, envVar, configKey, defaultValue string) string {
+	// First check environment variable
+	if envValue := os.Getenv(envVar); envValue != "" {
+		return envValue
+	}
+
+	// Then check profile configuration
+	if profile != nil {
+		return profile.Config(configKey, defaultValue)
+	}
+
+	return defaultValue
+}
+
+// readServiceInfo reads the service_info.md file if it exists in docs/knowledge_base/
+// Returns the content and whether the file exists
+func (d *DocumentationAgent) readServiceInfo() (string, bool) {
+	serviceInfoPath := filepath.Join(d.packageRoot, "docs", "knowledge_base", "service_info.md")
+	content, err := os.ReadFile(serviceInfoPath)
+	if err != nil {
+		return "", false
+	}
+	return string(content), true
+}
+
 // logAgentResponse logs debug information about the agent response
-func (d *DocumentationAgent) logAgentResponse(result *TaskResult) {
+func (d *DocumentationAgent) logAgentResponse(result *agent.TaskResult) {
 	logger.Debugf("DEBUG: Full agent task response follows (may contain sensitive content)")
 	logger.Debugf("Agent task response - Success: %t", result.Success)
 	logger.Debugf("Agent task response - FinalContent: %s", result.FinalContent)
@@ -345,7 +360,7 @@ func (d *DocumentationAgent) logAgentResponse(result *TaskResult) {
 }
 
 // executeTaskWithLogging executes a task and logs the result
-func (d *DocumentationAgent) executeTaskWithLogging(ctx context.Context, prompt string) (*TaskResult, error) {
+func (d *DocumentationAgent) executeTaskWithLogging(ctx context.Context, prompt string) (*agent.TaskResult, error) {
 	fmt.Println("🤖 LLM Agent is working...")
 
 	result, err := d.agent.ExecuteTask(ctx, prompt)
@@ -397,8 +412,9 @@ func (d *DocumentationAgent) handleInteractiveError() (string, bool, error) {
 	}
 
 	// Continue with retry prompt
-	newPrompt := d.buildRevisionPrompt("The previous attempt encountered an error. Please try a different approach to analyze the package and create/update the documentation.")
-	return newPrompt, true, nil
+	promptCtx := d.createPromptContext(d.manifest, "The previous attempt encountered an error. Please try a different approach to analyze the package and create/update the documentation.")
+	prompt := d.buildPrompt(PromptTypeRevision, promptCtx)
+	return prompt, true, nil
 }
 
 // handleUserAction processes the user's chosen action
@@ -457,7 +473,8 @@ func (d *DocumentationAgent) handleAcceptAction(readmeUpdated bool) (string, boo
 	}
 
 	fmt.Printf("🔄 Trying again to create %s...\n", d.targetDocFile)
-	newPrompt := d.buildRevisionPrompt(fmt.Sprintf("You haven't written a %s file yet. Please write the %s file in the _dev/build/docs/ directory based on your analysis.", d.targetDocFile, d.targetDocFile))
+	promptCtx := d.createPromptContext(d.manifest, fmt.Sprintf("You haven't written a %s file yet. Please write the %s file in the _dev/build/docs/ directory based on your analysis.", d.targetDocFile, d.targetDocFile))
+	newPrompt := d.buildPrompt(PromptTypeRevision, promptCtx)
 	return newPrompt, true, false, nil
 }
 
@@ -478,64 +495,106 @@ func (d *DocumentationAgent) handleRequestChanges() (string, bool, bool, error) 
 		fmt.Println("⚠️  No changes specified. Please try again.")
 		return "", true, false, nil // Continue the loop
 	}
-
-	newPrompt := d.buildRevisionPrompt(changes)
+	promptCtx := d.createPromptContext(d.manifest, changes)
+	newPrompt := d.buildPrompt(PromptTypeRevision, promptCtx)
 	return newPrompt, true, false, nil
 }
 
-// buildInitialPrompt creates the initial prompt for the LLM
-func (d *DocumentationAgent) buildInitialPrompt(manifest *packages.PackageManifest) string {
-	promptContent := loadPromptFile("initial_prompt.txt", initialPrompt, d.profile)
-	basePrompt := fmt.Sprintf(promptContent,
-		d.targetDocFile, // Line 5: file path in task description
-		manifest.Name,
-		manifest.Title,
-		manifest.Type,
-		manifest.Version,
-		manifest.Description,
-		d.targetDocFile, // Line 16: file restriction directive
-		d.targetDocFile, // Line 33: tool usage guideline
-		d.targetDocFile, // Line 43: initial analysis step
-		d.targetDocFile) // Line 69: write results step
+// buildPrompt creates a prompt based on type and context
+func (d *DocumentationAgent) buildPrompt(promptType PromptType, ctx PromptContext) string {
+	var promptFile, embeddedContent string
+	var formatArgs []interface{}
 
-	// Check if service_info.md exists and append it to the prompt
-	if serviceInfo, exists := d.readServiceInfo(); exists {
-		basePrompt += fmt.Sprintf("\n\nKNOWLEDGE BASE - SERVICE INFORMATION (SOURCE OF TRUTH):\nThe following information is from docs/knowledge_base/service_info.md and should be treated as the authoritative source.\nIf you find conflicting information from other sources (web search, etc.), prefer the information below.\n\n---\n%s\n---\n", serviceInfo)
+	switch promptType {
+	case PromptTypeInitial:
+		promptFile = "initial_prompt.txt"
+		embeddedContent = InitialPrompt
+		formatArgs = d.buildInitialPromptArgs(ctx)
+	case PromptTypeRevision:
+		promptFile = "revision_prompt.txt"
+		embeddedContent = RevisionPrompt
+		formatArgs = d.buildRevisionPromptArgs(ctx)
+	case PromptTypeSectionBased:
+		promptFile = "limit_hit_prompt.txt"
+		embeddedContent = LimitHitPrompt
+		formatArgs = d.buildSectionBasedPromptArgs(ctx)
+	}
+
+	promptContent := loadPromptFile(promptFile, embeddedContent, d.profile)
+	basePrompt := fmt.Sprintf(promptContent, formatArgs...)
+
+	// Append service info if available
+	if ctx.HasServiceInfo {
+		basePrompt += fmt.Sprintf(
+			"\n\nKNOWLEDGE BASE - SERVICE INFORMATION (SOURCE OF TRUTH):"+
+				"\nThe following information is from docs/knowledge_base/service_info.md and should be treated as the authoritative source."+
+				"\nIf you find conflicting information from other sources (web search, etc.), prefer the information below."+
+				"\n\n---\n%s\n---\n",
+			ctx.ServiceInfo)
 	}
 
 	return basePrompt
 }
 
-// buildRevisionPrompt creates a comprehensive prompt for document revisions that includes all necessary context
-func (d *DocumentationAgent) buildRevisionPrompt(changes string) string {
-	// Read package manifest for context
-	manifest, err := packages.ReadPackageManifestFromPackageRoot(d.packageRoot)
-	if err != nil {
-		// Fallback to a simpler prompt if we can't read the manifest
-		return fmt.Sprintf("Please make the following changes to the documentation:\n\n%s", changes)
+// buildInitialPromptArgs prepares arguments for initial prompt
+func (d *DocumentationAgent) buildInitialPromptArgs(ctx PromptContext) []interface{} {
+	return []interface{}{
+		ctx.TargetDocFile, // Line 5: file path in task description
+		ctx.Manifest.Name,
+		ctx.Manifest.Title,
+		ctx.Manifest.Type,
+		ctx.Manifest.Version,
+		ctx.Manifest.Description,
+		ctx.TargetDocFile, // Line 16: file restriction directive
+		ctx.TargetDocFile, // Line 33: tool usage guideline
+		ctx.TargetDocFile, // Line 43: initial analysis step
+		ctx.TargetDocFile, // Line 69: write results step
 	}
+}
 
-	promptContent := loadPromptFile("revision_prompt.txt", revisionPrompt, d.profile)
-	basePrompt := fmt.Sprintf(promptContent,
-		d.targetDocFile, // Line 5: target documentation file label
-		manifest.Name,
-		manifest.Title,
-		manifest.Type,
-		manifest.Version,
-		manifest.Description,
-		d.targetDocFile, // Line 15: file restriction directive
-		d.targetDocFile, // Line 17: read current content directive
-		d.targetDocFile, // Line 35: tool usage guideline
-		d.targetDocFile, // Line 38: step 1 - read current file
-		d.targetDocFile, // Line 44: step 7 - write documentation
-		changes)         // Line 47: user-requested changes
-
-	// Check if service_info.md exists and append it to the prompt
-	if serviceInfo, exists := d.readServiceInfo(); exists {
-		basePrompt += fmt.Sprintf("\n\nKNOWLEDGE BASE - SERVICE INFORMATION (SOURCE OF TRUTH):\nThe following information is from docs/knowledge_base/service_info.md and should be treated as the authoritative source.\nIf you find conflicting information from other sources (web search, etc.), prefer the information below.\n\n---\n%s\n---\n", serviceInfo)
+// buildRevisionPromptArgs prepares arguments for revision prompt
+func (d *DocumentationAgent) buildRevisionPromptArgs(ctx PromptContext) []interface{} {
+	return []interface{}{
+		ctx.TargetDocFile, // Line 5: target documentation file label
+		ctx.Manifest.Name,
+		ctx.Manifest.Title,
+		ctx.Manifest.Type,
+		ctx.Manifest.Version,
+		ctx.Manifest.Description,
+		ctx.TargetDocFile, // Line 15: file restriction directive
+		ctx.TargetDocFile, // Line 17: read current content directive
+		ctx.TargetDocFile, // Line 35: tool usage guideline
+		ctx.TargetDocFile, // Line 38: step 1 - read current file
+		ctx.TargetDocFile, // Line 44: step 7 - write documentation
+		ctx.Changes,       // Line 47: user-requested changes
 	}
+}
 
-	return basePrompt
+// buildSectionBasedPromptArgs prepares arguments for section-based prompt
+func (d *DocumentationAgent) buildSectionBasedPromptArgs(ctx PromptContext) []interface{} {
+	return []interface{}{
+		ctx.TargetDocFile, // Line 3: task description
+		ctx.TargetDocFile, // Line 5: target documentation file label
+		ctx.Manifest.Name,
+		ctx.Manifest.Title,
+		ctx.Manifest.Type,
+		ctx.Manifest.Version,
+		ctx.Manifest.Description,
+		ctx.TargetDocFile, // Line 33: write_file tool description
+		ctx.TargetDocFile, // Line 42: step 2 - read current file
+	}
+}
+
+// Helper to create context with service info
+func (d *DocumentationAgent) createPromptContext(manifest *packages.PackageManifest, changes string) PromptContext {
+	serviceInfo, hasServiceInfo := d.readServiceInfo()
+	return PromptContext{
+		Manifest:       manifest,
+		TargetDocFile:  d.targetDocFile,
+		Changes:        changes,
+		ServiceInfo:    serviceInfo,
+		HasServiceInfo: hasServiceInfo,
+	}
 }
 
 // handleTokenLimitResponse creates a section-based prompt when LLM hits token limits
@@ -553,7 +612,7 @@ func (d *DocumentationAgent) handleTokenLimitResponse(originalResponse string) (
 
 // buildSectionBasedPrompt creates a prompt for generating documentation in sections
 func (d *DocumentationAgent) buildSectionBasedPrompt(manifest *packages.PackageManifest) string {
-	promptContent := loadPromptFile("limit_hit_prompt.txt", limitHitPrompt, d.profile)
+	promptContent := loadPromptFile("limit_hit_prompt.txt", LimitHitPrompt, d.profile)
 	return fmt.Sprintf(promptContent,
 		d.targetDocFile, // Line 3: task description
 		d.targetDocFile, // Line 5: target documentation file label
@@ -593,7 +652,7 @@ func (d *DocumentationAgent) displayReadmeIfUpdated() bool {
 	fmt.Printf("📊 Processed %s stats: %d characters, %d lines\n", d.targetDocFile, len(processedContentStr), strings.Count(processedContentStr, "\n")+1)
 
 	// Try to open in browser first
-	if tryBrowserPreview(processedContentStr) {
+	if ui.TryBrowserPreview(processedContentStr) {
 		fmt.Println("🌐 Opening documentation preview in your web browser...")
 		fmt.Println("💡 Return here to accept or request changes.")
 	} else {
@@ -689,7 +748,7 @@ func isErrorResponse(content string) bool {
 }
 
 // isTaskResultError provides sophisticated error detection considering conversation context
-func isTaskResultError(content string, conversation []ConversationEntry) bool {
+func isTaskResultError(content string, conversation []agent.ConversationEntry) bool {
 	// Empty content is not necessarily an error - it might be after successful tool execution
 	if strings.TrimSpace(content) == "" {
 		// If we have conversation context, check if recent tools succeeded
@@ -766,7 +825,7 @@ func isTokenLimitMessage(content string) bool {
 }
 
 // hasRecentSuccessfulTools checks if recent tool executions in the conversation were successful
-func hasRecentSuccessfulTools(conversation []ConversationEntry) bool {
+func hasRecentSuccessfulTools(conversation []agent.ConversationEntry) bool {
 	// Look at the last few conversation entries for successful tool results
 	for i := len(conversation) - 1; i >= 0 && i >= len(conversation)-5; i-- {
 		entry := conversation[i]
