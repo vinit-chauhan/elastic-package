@@ -12,27 +12,41 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/elastic/elastic-package/internal/configuration/locations"
-	"github.com/elastic/elastic-package/internal/docs"
-	"github.com/elastic/elastic-package/internal/environment"
 	"github.com/elastic/elastic-package/internal/llmagent/agent"
 	"github.com/elastic/elastic-package/internal/llmagent/mcp"
 	"github.com/elastic/elastic-package/internal/llmagent/providers"
 	"github.com/elastic/elastic-package/internal/llmagent/tools"
-	"github.com/elastic/elastic-package/internal/llmagent/ui"
 	"github.com/elastic/elastic-package/internal/logger"
 	"github.com/elastic/elastic-package/internal/packages"
 	"github.com/elastic/elastic-package/internal/profile"
 	"github.com/elastic/elastic-package/internal/tui"
 )
 
-type PromptType int
+type ResponseStatus int
 
 const (
-	PromptTypeInitial PromptType = iota
-	PromptTypeRevision
-	PromptTypeSectionBased
+	// ResponseSuccess indicates the LLM response is valid and successful
+	ResponseSuccess ResponseStatus = iota
+	// ResponseError indicates the LLM encountered an error
+	ResponseError
+	// ResponseTokenLimit indicates the LLM hit a token/length limit
+	ResponseTokenLimit
+	// ResponseEmpty indicates the response was empty (may or may not indicate an error)
+	ResponseEmpty
 )
+
+type ResponseAnalyzer struct {
+	successIndicators    []string
+	errorIndicators      []string
+	errorMarkers         []string
+	tokenLimitIndicators []string
+}
+
+// ResponseAnalysis contains the results of analyzing an LLM response
+type ResponseAnalysis struct {
+	Status  ResponseStatus
+	Message string // Optional message explaining the status
+}
 
 // DocumentationAgent handles documentation updates for packages
 type DocumentationAgent struct {
@@ -42,6 +56,7 @@ type DocumentationAgent struct {
 	profile               *profile.Profile
 	originalReadmeContent *string // Stores original content for restoration on cancel
 	manifest              *packages.PackageManifest
+	responseAnalyzer      *ResponseAnalyzer
 }
 
 type PromptContext struct {
@@ -67,7 +82,6 @@ func NewDocumentationAgent(provider providers.LLMProvider, packageRoot string, t
 		}
 	}
 
-	//TODO: rename to avoid confusion on MCP agent vs docAgent
 	// Create the agent
 	llmAgent := agent.NewAgent(provider, packageTools)
 
@@ -76,12 +90,14 @@ func NewDocumentationAgent(provider providers.LLMProvider, packageRoot string, t
 		return nil, fmt.Errorf("failed to read package manifest: %w", err)
 	}
 
+	responseAnalyzer := NewResponseAnalyzer()
 	return &DocumentationAgent{
-		agent:         llmAgent,
-		packageRoot:   packageRoot,
-		targetDocFile: targetDocFile,
-		profile:       profile,
-		manifest:      manifest,
+		agent:            llmAgent,
+		packageRoot:      packageRoot,
+		targetDocFile:    targetDocFile,
+		profile:          profile,
+		manifest:         manifest,
+		responseAnalyzer: responseAnalyzer,
 	}, nil
 }
 
@@ -169,8 +185,11 @@ func (d *DocumentationAgent) runNonInteractiveMode(ctx context.Context, prompt s
 	fmt.Println(result.FinalContent)
 	fmt.Println(strings.Repeat("-", 50))
 
-	// Check for token limit messages first - these need special handling
-	if isTokenLimitMessage(result.FinalContent) {
+	analysis := d.responseAnalyzer.AnalyzeResponse(result.FinalContent, result.Conversation)
+
+	switch analysis.Status {
+	case ResponseTokenLimit:
+		logger.Debug("Recieved limit hit response from LLM.")
 		fmt.Println("\n⚠️  LLM hit token limits. Switching to section-based generation...")
 		newPrompt, err := d.handleTokenLimitResponse(result.FinalContent)
 		if err != nil {
@@ -187,33 +206,31 @@ func (d *DocumentationAgent) runNonInteractiveMode(ctx context.Context, prompt s
 			fmt.Printf("\n📄 %s was updated successfully with section-based approach!\n", d.targetDocFile)
 			return err
 		}
-	}
-
-	// Check for errors in response using enhanced detection with conversation context
-	if isTaskResultError(result.FinalContent, result.Conversation) {
+	case ResponseError:
+		logger.Error("Recieved error response from LLM.")
 		fmt.Println("\n❌ Error detected in LLM response.")
 		fmt.Println("In non-interactive mode, exiting due to error.")
 		return fmt.Errorf("LLM agent encountered an error: %s", result.FinalContent)
 	}
 
 	// Check if documentation file was successfully updated
-	if updated, err := d.handleReadmeUpdate(); updated {
+	if updated, _ := d.handleReadmeUpdate(); updated {
 		fmt.Printf("\n📄 %s was updated successfully!\n", d.targetDocFile)
-		return err
+		return nil
 	}
 
 	// Second attempt with specific instructions
-	fmt.Printf("⚠️  No %s was updated. Trying again with specific instructions...\n", d.targetDocFile)
-	specificPrompt := fmt.Sprintf("You haven't updated a %s file yet. Please create the %s file in the _dev/build/docs/ directory based on your analysis. This is required to complete the task.", d.targetDocFile, d.targetDocFile)
+	fmt.Printf("⚠️  %s was not updated. Trying again with specific instructions...\n", d.targetDocFile)
+	specificPrompt := fmt.Sprintf("You haven't updated the %s file yet. Please write the %s file in the _dev/build/docs/ directory based on your analysis. This is required to complete the task.", d.targetDocFile, d.targetDocFile)
 
 	if _, err := d.executeTaskWithLogging(ctx, specificPrompt); err != nil {
 		return fmt.Errorf("second attempt failed: %w", err)
 	}
 
 	// Final check
-	if updated, err := d.handleReadmeUpdate(); updated {
+	if updated, _ := d.handleReadmeUpdate(); updated {
 		fmt.Printf("\n📄 %s was updated on second attempt!\n", d.targetDocFile)
-		return err
+		return nil
 	}
 
 	return fmt.Errorf("failed to create %s after two attempts", d.targetDocFile)
@@ -232,8 +249,10 @@ func (d *DocumentationAgent) runInteractiveMode(ctx context.Context, prompt stri
 			return err
 		}
 
-		// Check for token limit messages first - these need special handling
-		if isTokenLimitMessage(result.FinalContent) {
+		analysis := d.responseAnalyzer.AnalyzeResponse(result.FinalContent, result.Conversation)
+
+		switch analysis.Status {
+		case ResponseTokenLimit:
 			fmt.Println("\n⚠️  LLM hit token limits. Switching to section-based generation...")
 			newPrompt, err := d.handleTokenLimitResponse(result.FinalContent)
 			if err != nil {
@@ -241,10 +260,7 @@ func (d *DocumentationAgent) runInteractiveMode(ctx context.Context, prompt stri
 			}
 			prompt = newPrompt
 			continue
-		}
-
-		// Handle error responses using enhanced detection with conversation context
-		if isTaskResultError(result.FinalContent, result.Conversation) {
+		case ResponseError:
 			newPrompt, shouldContinue, err := d.handleInteractiveError()
 			if err != nil {
 				return err
@@ -260,13 +276,11 @@ func (d *DocumentationAgent) runInteractiveMode(ctx context.Context, prompt stri
 		// Display README content if updated
 		readmeUpdated := d.displayReadmeIfUpdated()
 
-		// Get user action
+		// Get and handle user action
 		action, err := d.getUserAction()
 		if err != nil {
 			return err
 		}
-
-		// Handle user action
 		newPrompt, shouldContinue, shouldExit, err := d.handleUserAction(action, readmeUpdated)
 		if err != nil {
 			return err
@@ -279,71 +293,6 @@ func (d *DocumentationAgent) runInteractiveMode(ctx context.Context, prompt stri
 			continue
 		}
 	}
-}
-
-// loadPromptFile loads a prompt file from external location if enabled, otherwise uses embedded content
-func loadPromptFile(filename string, embeddedContent string, profile *profile.Profile) string {
-	// Check if external prompt files are enabled
-	envVar := environment.WithElasticPackagePrefix("LLM_EXTERNAL_PROMPTS")
-	configKey := "llm.external_prompts"
-	useExternal := getConfigValue(profile, envVar, configKey, "false") == "true"
-
-	if !useExternal {
-		return embeddedContent
-	}
-
-	// Check in profile directory first if profile is available
-	if profile != nil {
-		profilePath := filepath.Join(profile.ProfilePath, "prompts", filename)
-		if content, err := os.ReadFile(profilePath); err == nil {
-			logger.Debugf("Loaded external prompt file from profile: %s", profilePath)
-			return string(content)
-		}
-	}
-
-	// Try to load from .elastic-package directory
-	loc, err := locations.NewLocationManager()
-	if err != nil {
-		logger.Debugf("Failed to get location manager, using embedded prompt: %v", err)
-		return embeddedContent
-	}
-
-	// Check in .elastic-package directory
-	elasticPackagePath := filepath.Join(loc.RootDir(), "prompts", filename)
-	if content, err := os.ReadFile(elasticPackagePath); err == nil {
-		logger.Debugf("Loaded external prompt file from .elastic-package: %s", elasticPackagePath)
-		return string(content)
-	}
-
-	// Fall back to embedded content
-	logger.Debugf("External prompt file not found, using embedded content for: %s", filename)
-	return embeddedContent
-}
-
-// getConfigValue retrieves a configuration value with fallback from environment variable to profile config
-func getConfigValue(profile *profile.Profile, envVar, configKey, defaultValue string) string {
-	// First check environment variable
-	if envValue := os.Getenv(envVar); envValue != "" {
-		return envValue
-	}
-
-	// Then check profile configuration
-	if profile != nil {
-		return profile.Config(configKey, defaultValue)
-	}
-
-	return defaultValue
-}
-
-// readServiceInfo reads the service_info.md file if it exists in docs/knowledge_base/
-// Returns the content and whether the file exists
-func (d *DocumentationAgent) readServiceInfo() (string, bool) {
-	serviceInfoPath := filepath.Join(d.packageRoot, "docs", "knowledge_base", "service_info.md")
-	content, err := os.ReadFile(serviceInfoPath)
-	if err != nil {
-		return "", false
-	}
-	return string(content), true
 }
 
 // logAgentResponse logs debug information about the agent response
@@ -375,448 +324,99 @@ func (d *DocumentationAgent) executeTaskWithLogging(ctx context.Context, prompt 
 	return result, nil
 }
 
-// handleReadmeUpdate checks if documentation file was updated and reports the result
-func (d *DocumentationAgent) handleReadmeUpdate() (bool, error) {
-	readmeUpdated := d.checkReadmeUpdated()
-	if !readmeUpdated {
-		return false, nil
-	}
-
-	content, err := d.readCurrentReadme()
-	if err != nil || content == "" {
-		return false, err
-	}
-
-	fmt.Printf("✅ Documentation update completed! (%d characters written to %s)\n", len(content), d.targetDocFile)
-	return true, nil
-}
-
-// handleInteractiveError handles error responses in interactive mode
-func (d *DocumentationAgent) handleInteractiveError() (string, bool, error) {
-	fmt.Println("\n❌ Error detected in LLM response.")
-
-	errorPrompt := tui.NewSelect("What would you like to do?", []string{
-		"Try again",
-		"Exit",
-	}, "Try again")
-
-	var errorAction string
-	err := tui.AskOne(errorPrompt, &errorAction)
-	if err != nil {
-		return "", false, fmt.Errorf("prompt failed: %w", err)
-	}
-
-	if errorAction == "Exit" {
-		fmt.Println("⚠️  Exiting due to LLM error.")
-		return "", false, nil
-	}
-
-	// Continue with retry prompt
-	promptCtx := d.createPromptContext(d.manifest, "The previous attempt encountered an error. Please try a different approach to analyze the package and create/update the documentation.")
-	prompt := d.buildPrompt(PromptTypeRevision, promptCtx)
-	return prompt, true, nil
-}
-
-// handleUserAction processes the user's chosen action
-func (d *DocumentationAgent) handleUserAction(action string, readmeUpdated bool) (string, bool, bool, error) {
-	switch action {
-	case "Accept and finalize":
-		return d.handleAcceptAction(readmeUpdated)
-	case "Request changes":
-		return d.handleRequestChanges()
-	case "Cancel":
-		fmt.Println("❌ Documentation update cancelled.")
-		d.restoreOriginalReadme()
-		return "", false, true, nil
-	default:
-		return "", false, false, fmt.Errorf("unknown action: %s", action)
+// NewResponseAnalyzer creates a new ResponseAnalyzer with default patterns
+//
+// These responses should be chosen to represent LLM responses to states, but are unlikely to appear in generated
+// documentation, which could trigger false positives.
+func NewResponseAnalyzer() *ResponseAnalyzer {
+	return &ResponseAnalyzer{
+		successIndicators: []string{
+			"✅ success",
+			"successfully wrote",
+			"completed successfully",
+		},
+		errorIndicators: []string{
+			"I encountered an error",
+			"I'm experiencing an error",
+			"I cannot complete",
+			"I'm unable to complete",
+			"Something went wrong",
+			"There was an error",
+			"I'm having trouble",
+			"I failed to",
+			"Error occurred",
+			"Task did not complete within maximum iterations",
+		},
+		errorMarkers: []string{
+			"❌ error",
+			"failed:",
+		},
+		tokenLimitIndicators: []string{
+			"I reached the maximum response length",
+			"maximum response length",
+			"reached the token limit",
+			"response is too long",
+			"breaking this into smaller tasks",
+			"due to length constraints",
+			"response length limit",
+			"token limit reached",
+			"output limit exceeded",
+			"maximum length exceeded",
+		},
 	}
 }
 
-// handleAcceptAction handles the "Accept and finalize" action
-func (d *DocumentationAgent) handleAcceptAction(readmeUpdated bool) (string, bool, bool, error) {
-	if readmeUpdated {
-		// Validate preserved sections if we had original content
-		if d.originalReadmeContent != nil {
-			if newContent, err := d.readCurrentReadme(); err == nil {
-				warnings := d.validatePreservedSections(*d.originalReadmeContent, newContent)
-				if len(warnings) > 0 {
-					fmt.Println("⚠️  Warning: Some human-edited sections may not have been preserved:")
-					for _, warning := range warnings {
-						fmt.Printf("   - %s\n", warning)
-					}
-					fmt.Println("   Please review the documentation to ensure important content wasn't lost.")
-				}
+// AnalyzeResponse will detect the LLM state based on it's response to us.
+func (ra *ResponseAnalyzer) AnalyzeResponse(content string, conversation []agent.ConversationEntry) ResponseAnalysis {
+	// Check for empty content
+	if strings.TrimSpace(content) == "" {
+		// Empty content might be okay if recent tools succeeded
+		if conversation != nil && ra.hasRecentSuccessfulTools(conversation) {
+			return ResponseAnalysis{
+				Status:  ResponseSuccess,
+				Message: "Empty response after successful tool execution",
 			}
 		}
-
-		fmt.Println("✅ Documentation update completed!")
-		return "", false, true, nil
-	}
-
-	// Documentation file wasn't updated - ask user what to do
-	continuePrompt := tui.NewSelect(fmt.Sprintf("%s file wasn't updated. What would you like to do?", d.targetDocFile), []string{
-		"Try again",
-		"Exit anyway",
-	}, "Try again")
-
-	var continueChoice string
-	err := tui.AskOne(continuePrompt, &continueChoice)
-	if err != nil {
-		return "", false, false, fmt.Errorf("prompt failed: %w", err)
-	}
-
-	if continueChoice == "Exit anyway" {
-		fmt.Printf("⚠️  Exiting without creating %s file.\n", d.targetDocFile)
-		d.restoreOriginalReadme()
-		return "", false, true, nil
-	}
-
-	fmt.Printf("🔄 Trying again to create %s...\n", d.targetDocFile)
-	promptCtx := d.createPromptContext(d.manifest, fmt.Sprintf("You haven't written a %s file yet. Please write the %s file in the _dev/build/docs/ directory based on your analysis.", d.targetDocFile, d.targetDocFile))
-	newPrompt := d.buildPrompt(PromptTypeRevision, promptCtx)
-	return newPrompt, true, false, nil
-}
-
-// handleRequestChanges handles the "Request changes" action
-func (d *DocumentationAgent) handleRequestChanges() (string, bool, bool, error) {
-	changes, err := tui.AskTextArea("What changes would you like to make to the documentation?")
-	if err != nil {
-		// Check if user cancelled
-		if errors.Is(err, tui.ErrCancelled) {
-			fmt.Println("⚠️  Changes request cancelled.")
-			return "", true, false, nil // Continue the loop
-		}
-		return "", false, false, fmt.Errorf("prompt failed: %w", err)
-	}
-
-	// Check if no changes were provided
-	if strings.TrimSpace(changes) == "" {
-		fmt.Println("⚠️  No changes specified. Please try again.")
-		return "", true, false, nil // Continue the loop
-	}
-	promptCtx := d.createPromptContext(d.manifest, changes)
-	newPrompt := d.buildPrompt(PromptTypeRevision, promptCtx)
-	return newPrompt, true, false, nil
-}
-
-// buildPrompt creates a prompt based on type and context
-func (d *DocumentationAgent) buildPrompt(promptType PromptType, ctx PromptContext) string {
-	var promptFile, embeddedContent string
-	var formatArgs []interface{}
-
-	switch promptType {
-	case PromptTypeInitial:
-		promptFile = "initial_prompt.txt"
-		embeddedContent = InitialPrompt
-		formatArgs = d.buildInitialPromptArgs(ctx)
-	case PromptTypeRevision:
-		promptFile = "revision_prompt.txt"
-		embeddedContent = RevisionPrompt
-		formatArgs = d.buildRevisionPromptArgs(ctx)
-	case PromptTypeSectionBased:
-		promptFile = "limit_hit_prompt.txt"
-		embeddedContent = LimitHitPrompt
-		formatArgs = d.buildSectionBasedPromptArgs(ctx)
-	}
-
-	promptContent := loadPromptFile(promptFile, embeddedContent, d.profile)
-	basePrompt := fmt.Sprintf(promptContent, formatArgs...)
-
-	// Append service info if available
-	if ctx.HasServiceInfo {
-		basePrompt += fmt.Sprintf(
-			"\n\nKNOWLEDGE BASE - SERVICE INFORMATION (SOURCE OF TRUTH):"+
-				"\nThe following information is from docs/knowledge_base/service_info.md and should be treated as the authoritative source."+
-				"\nIf you find conflicting information from other sources (web search, etc.), prefer the information below."+
-				"\n\n---\n%s\n---\n",
-			ctx.ServiceInfo)
-	}
-
-	return basePrompt
-}
-
-// buildInitialPromptArgs prepares arguments for initial prompt
-func (d *DocumentationAgent) buildInitialPromptArgs(ctx PromptContext) []interface{} {
-	return []interface{}{
-		ctx.TargetDocFile, // Line 5: file path in task description
-		ctx.Manifest.Name,
-		ctx.Manifest.Title,
-		ctx.Manifest.Type,
-		ctx.Manifest.Version,
-		ctx.Manifest.Description,
-		ctx.TargetDocFile, // Line 16: file restriction directive
-		ctx.TargetDocFile, // Line 33: tool usage guideline
-		ctx.TargetDocFile, // Line 43: initial analysis step
-		ctx.TargetDocFile, // Line 69: write results step
-	}
-}
-
-// buildRevisionPromptArgs prepares arguments for revision prompt
-func (d *DocumentationAgent) buildRevisionPromptArgs(ctx PromptContext) []interface{} {
-	return []interface{}{
-		ctx.TargetDocFile, // Line 5: target documentation file label
-		ctx.Manifest.Name,
-		ctx.Manifest.Title,
-		ctx.Manifest.Type,
-		ctx.Manifest.Version,
-		ctx.Manifest.Description,
-		ctx.TargetDocFile, // Line 15: file restriction directive
-		ctx.TargetDocFile, // Line 17: read current content directive
-		ctx.TargetDocFile, // Line 35: tool usage guideline
-		ctx.TargetDocFile, // Line 38: step 1 - read current file
-		ctx.TargetDocFile, // Line 44: step 7 - write documentation
-		ctx.Changes,       // Line 47: user-requested changes
-	}
-}
-
-// buildSectionBasedPromptArgs prepares arguments for section-based prompt
-func (d *DocumentationAgent) buildSectionBasedPromptArgs(ctx PromptContext) []interface{} {
-	return []interface{}{
-		ctx.TargetDocFile, // Line 3: task description
-		ctx.TargetDocFile, // Line 5: target documentation file label
-		ctx.Manifest.Name,
-		ctx.Manifest.Title,
-		ctx.Manifest.Type,
-		ctx.Manifest.Version,
-		ctx.Manifest.Description,
-		ctx.TargetDocFile, // Line 33: write_file tool description
-		ctx.TargetDocFile, // Line 42: step 2 - read current file
-	}
-}
-
-// Helper to create context with service info
-func (d *DocumentationAgent) createPromptContext(manifest *packages.PackageManifest, changes string) PromptContext {
-	serviceInfo, hasServiceInfo := d.readServiceInfo()
-	return PromptContext{
-		Manifest:       manifest,
-		TargetDocFile:  d.targetDocFile,
-		Changes:        changes,
-		ServiceInfo:    serviceInfo,
-		HasServiceInfo: hasServiceInfo,
-	}
-}
-
-// handleTokenLimitResponse creates a section-based prompt when LLM hits token limits
-func (d *DocumentationAgent) handleTokenLimitResponse(originalResponse string) (string, error) {
-	// Read package manifest for context
-	manifest, err := packages.ReadPackageManifestFromPackageRoot(d.packageRoot)
-	if err != nil {
-		return "", fmt.Errorf("failed to read package manifest: %w", err)
-	}
-
-	// Create a section-based generation prompt
-	sectionBasedPrompt := d.buildSectionBasedPrompt(manifest)
-	return sectionBasedPrompt, nil
-}
-
-// buildSectionBasedPrompt creates a prompt for generating documentation in sections
-func (d *DocumentationAgent) buildSectionBasedPrompt(manifest *packages.PackageManifest) string {
-	promptContent := loadPromptFile("limit_hit_prompt.txt", LimitHitPrompt, d.profile)
-	return fmt.Sprintf(promptContent,
-		d.targetDocFile, // Line 3: task description
-		d.targetDocFile, // Line 5: target documentation file label
-		manifest.Name,
-		manifest.Title,
-		manifest.Type,
-		manifest.Version,
-		manifest.Description,
-		d.targetDocFile, // Line 33: write_file tool description
-		d.targetDocFile) // Line 42: step 2 - read current file
-}
-
-// displayReadmeIfUpdated shows documentation content if it was updated
-func (d *DocumentationAgent) displayReadmeIfUpdated() bool {
-	readmeUpdated := d.checkReadmeUpdated()
-	if !readmeUpdated {
-		fmt.Printf("\n⚠️  %s file not updated\n", d.targetDocFile)
-		return false
-	}
-
-	sourceContent, err := d.readCurrentReadme()
-	if err != nil || sourceContent == "" {
-		fmt.Printf("\n⚠️  %s file exists but could not be read or is empty\n", d.targetDocFile)
-		return false
-	}
-
-	// Try to render the content
-	renderedContent, shouldBeRendered, err := docs.GenerateReadme(d.targetDocFile, d.packageRoot)
-	if err != nil || !shouldBeRendered {
-		fmt.Printf("\n⚠️  The generated %s could not be rendered.\n", d.targetDocFile)
-		fmt.Println("It's recommended that you do not accept this version (ask for revisions or cancel).")
-		return true
-	}
-
-	// Show the processed/rendered content
-	processedContentStr := string(renderedContent)
-	fmt.Printf("📊 Processed %s stats: %d characters, %d lines\n", d.targetDocFile, len(processedContentStr), strings.Count(processedContentStr, "\n")+1)
-
-	// Try to open in browser first
-	if ui.TryBrowserPreview(processedContentStr) {
-		fmt.Println("🌐 Opening documentation preview in your web browser...")
-		fmt.Println("💡 Return here to accept or request changes.")
-	} else {
-		// Fallback to terminal display if browser preview fails
-		title := fmt.Sprintf("📄 Processed %s (as generated by elastic-package build)", d.targetDocFile)
-		if err := tui.ShowContent(title, processedContentStr); err != nil {
-			// Fallback to simple print if viewer fails
-			fmt.Printf("\n%s:\n", title)
-			fmt.Println(strings.Repeat("=", 70))
-			fmt.Println(processedContentStr)
-			fmt.Println(strings.Repeat("=", 70))
+		return ResponseAnalysis{
+			Status:  ResponseEmpty,
+			Message: "Empty response without tool success context",
 		}
 	}
 
-	return true
-}
-
-// getUserAction prompts the user for their next action
-func (d *DocumentationAgent) getUserAction() (string, error) {
-	selectPrompt := tui.NewSelect("What would you like to do?", []string{
-		"Accept and finalize",
-		"Request changes",
-		"Cancel",
-	}, "Accept and finalize")
-
-	var action string
-	err := tui.AskOne(selectPrompt, &action)
-	if err != nil {
-		return "", fmt.Errorf("prompt failed: %w", err)
-	}
-
-	return action, nil
-}
-
-// checkReadmeUpdated checks if the documentation file has been updated by comparing current content to originalReadmeContent
-func (d *DocumentationAgent) checkReadmeUpdated() bool {
-	docPath := filepath.Join(d.packageRoot, "_dev", "build", "docs", d.targetDocFile)
-
-	// Check if file exists
-	if _, err := os.Stat(docPath); err != nil {
-		return false
-	}
-
-	// Read current content
-	currentContent, err := os.ReadFile(docPath)
-	if err != nil {
-		return false
-	}
-
-	currentContentStr := string(currentContent)
-
-	// If there was no original content, any new content means it's updated
-	if d.originalReadmeContent == nil {
-		return currentContentStr != ""
-	}
-
-	// Compare current content with original content
-	return currentContentStr != *d.originalReadmeContent
-}
-
-// readCurrentReadme reads the current documentation file content
-func (d *DocumentationAgent) readCurrentReadme() (string, error) {
-	docPath := filepath.Join(d.packageRoot, "_dev", "build", "docs", d.targetDocFile)
-	content, err := os.ReadFile(docPath)
-	if err != nil {
-		return "", err
-	}
-	return string(content), nil
-}
-
-// validatePreservedSections checks if human-edited sections are preserved in the new content
-func (d *DocumentationAgent) validatePreservedSections(originalContent, newContent string) []string {
-	var warnings []string
-
-	// Extract preserved sections from original content
-	preservedSections := d.extractPreservedSections(originalContent)
-
-	// Check if each preserved section exists in the new content
-	for marker, content := range preservedSections {
-		if !strings.Contains(newContent, content) {
-			warnings = append(warnings, fmt.Sprintf("Human-edited section '%s' was not preserved", marker))
+	// Check for token limit first - this is NOT an error, it's recoverable
+	if ra.containsAnyIndicator(content, ra.tokenLimitIndicators) {
+		return ResponseAnalysis{
+			Status:  ResponseTokenLimit,
+			Message: "LLM hit token/length limits",
 		}
 	}
 
-	return warnings
-}
-
-// isErrorResponse detects if the LLM response indicates an error occurred
-// This is now a wrapper that calls the more sophisticated analysis function
-func isErrorResponse(content string) bool {
-	// Use the enhanced error detection that considers conversation context
-	return isTaskResultError(content, nil)
-}
-
-// isTaskResultError provides sophisticated error detection considering conversation context
-func isTaskResultError(content string, conversation []agent.ConversationEntry) bool {
-	// Empty content is not necessarily an error - it might be after successful tool execution
-	if strings.TrimSpace(content) == "" {
-		// If we have conversation context, check if recent tools succeeded
-		if conversation != nil && hasRecentSuccessfulTools(conversation) {
-			return false
+	// Check for error indicators
+	if ra.containsAnyIndicator(content, ra.errorIndicators) {
+		// However, if recent tools succeeded, this might be a false error report
+		if conversation != nil && ra.hasRecentSuccessfulTools(conversation) {
+			return ResponseAnalysis{
+				Status:  ResponseSuccess,
+				Message: "Error message detected but recent tools succeeded (likely false error)",
+			}
 		}
-		// Empty content without context might indicate a problem, but let's be lenient
-		return false
+		return ResponseAnalysis{
+			Status:  ResponseError,
+			Message: "LLM reported an error",
+		}
 	}
 
-	// Check for token limit messages - these are NOT errors, they're recoverable conditions
-	if isTokenLimitMessage(content) {
-		return false
+	// Default: success
+	return ResponseAnalysis{
+		Status:  ResponseSuccess,
+		Message: "Normal response",
 	}
+}
 
-	errorIndicators := []string{
-		"I encountered an error",
-		"I'm experiencing an error",
-		"I cannot complete",
-		"I'm unable to complete",
-		"Something went wrong",
-		"There was an error",
-		"I'm having trouble",
-		"I failed to",
-		"Error occurred",
-		"Task did not complete within maximum iterations",
-	}
-
+// containsAnyIndicator checks if content contains any of the given indicators (case-insensitive)
+func (ra *ResponseAnalyzer) containsAnyIndicator(content string, indicators []string) bool {
 	contentLower := strings.ToLower(content)
-
-	// Check for explicit error indicators
-	hasErrorIndicator := false
-	for _, indicator := range errorIndicators {
-		if strings.Contains(contentLower, strings.ToLower(indicator)) {
-			hasErrorIndicator = true
-			break
-		}
-	}
-
-	if !hasErrorIndicator {
-		return false
-	}
-
-	// If we have conversation context and recent tools succeeded, this might be a false error
-	if conversation != nil && hasRecentSuccessfulTools(conversation) {
-		return false
-	}
-
-	return true
-}
-
-// isTokenLimitMessage detects if the LLM response indicates it hit token limits
-func isTokenLimitMessage(content string) bool {
-	tokenLimitIndicators := []string{
-		"I reached the maximum response length",
-		"maximum response length",
-		"reached the token limit",
-		"response is too long",
-		"breaking this into smaller tasks",
-		"due to length constraints",
-		"response length limit",
-		"token limit reached",
-		"output limit exceeded",
-		"maximum length exceeded",
-	}
-
-	contentLower := strings.ToLower(content)
-	for _, indicator := range tokenLimitIndicators {
+	for _, indicator := range indicators {
 		if strings.Contains(contentLower, strings.ToLower(indicator)) {
 			return true
 		}
@@ -824,111 +424,28 @@ func isTokenLimitMessage(content string) bool {
 	return false
 }
 
-// hasRecentSuccessfulTools checks if recent tool executions in the conversation were successful
-func hasRecentSuccessfulTools(conversation []agent.ConversationEntry) bool {
-	// Look at the last few conversation entries for successful tool results
-	for i := len(conversation) - 1; i >= 0 && i >= len(conversation)-5; i-- {
+// hasRecentSuccessfulTools checks if recent tool executions were successful
+func (ra *ResponseAnalyzer) hasRecentSuccessfulTools(conversation []agent.ConversationEntry) bool {
+	// Look at the last 5 conversation entries for tool results
+	lookbackCount := 5
+	startIdx := len(conversation) - lookbackCount
+	if startIdx < 0 {
+		startIdx = 0
+	}
+
+	for i := len(conversation) - 1; i >= startIdx; i-- {
 		entry := conversation[i]
 		if entry.Type == "tool_result" {
-			content := strings.ToLower(entry.Content)
-			// Check for success indicators
-			if strings.Contains(content, "✅ success") ||
-				strings.Contains(content, "successfully wrote") ||
-				strings.Contains(content, "completed successfully") {
+			// Check for success indicators first
+			if ra.containsAnyIndicator(entry.Content, ra.successIndicators) {
 				return true
 			}
-			// If we hit an actual error, stop looking
-			if strings.Contains(content, "❌ error") ||
-				strings.Contains(content, "failed:") ||
-				strings.Contains(content, "access denied") {
+
+			// If we hit an actual error marker, stop looking
+			if ra.containsAnyIndicator(entry.Content, ra.errorMarkers) {
 				return false
 			}
 		}
 	}
 	return false
-}
-
-// extractPreservedSections extracts all human-edited sections from content
-func (d *DocumentationAgent) extractPreservedSections(content string) map[string]string {
-	sections := make(map[string]string)
-
-	// Define marker pairs
-	markers := []struct {
-		start, end string
-		name       string
-	}{
-		{"<!-- PRESERVE START -->", "<!-- PRESERVE END -->", "PRESERVE"},
-	}
-
-	for _, marker := range markers {
-		startIdx := 0
-		sectionNum := 1
-
-		for {
-			start := strings.Index(content[startIdx:], marker.start)
-			if start == -1 {
-				break
-			}
-			start += startIdx
-
-			end := strings.Index(content[start:], marker.end)
-			if end == -1 {
-				break
-			}
-			end += start
-
-			// Extract the full section including markers
-			sectionContent := content[start : end+len(marker.end)]
-			sectionKey := fmt.Sprintf("%s-%d", marker.name, sectionNum)
-			sections[sectionKey] = sectionContent
-
-			startIdx = end + len(marker.end)
-			sectionNum++
-		}
-	}
-
-	return sections
-}
-
-// backupOriginalReadme stores the current documentation file content for potential restoration and comparison to the generated version
-func (d *DocumentationAgent) backupOriginalReadme() {
-	docPath := filepath.Join(d.packageRoot, "_dev", "build", "docs", d.targetDocFile)
-
-	// Check if documentation file exists
-	if _, err := os.Stat(docPath); err == nil {
-		// Read and store the original content
-		if content, err := os.ReadFile(docPath); err == nil {
-			contentStr := string(content)
-			d.originalReadmeContent = &contentStr
-			fmt.Printf("📋 Backed up original %s (%d characters)\n", d.targetDocFile, len(contentStr))
-		} else {
-			fmt.Printf("⚠️  Could not read original %s for backup: %v\n", d.targetDocFile, err)
-		}
-	} else {
-		d.originalReadmeContent = nil
-		fmt.Printf("📋 No existing %s found - will create new one\n", d.targetDocFile)
-	}
-}
-
-// restoreOriginalReadme restores the documentation file to its original state
-func (d *DocumentationAgent) restoreOriginalReadme() {
-	docPath := filepath.Join(d.packageRoot, "_dev", "build", "docs", d.targetDocFile)
-
-	if d.originalReadmeContent != nil {
-		// Restore original content
-		if err := os.WriteFile(docPath, []byte(*d.originalReadmeContent), 0o644); err != nil {
-			fmt.Printf("⚠️  Failed to restore original %s: %v\n", d.targetDocFile, err)
-		} else {
-			fmt.Printf("🔄 Restored original %s (%d characters)\n", d.targetDocFile, len(*d.originalReadmeContent))
-		}
-	} else {
-		// No original file existed, so remove any file that was created
-		if err := os.Remove(docPath); err != nil {
-			if !os.IsNotExist(err) {
-				fmt.Printf("⚠️  Failed to remove created %s: %v\n", d.targetDocFile, err)
-			}
-		} else {
-			fmt.Printf("🗑️  Removed created %s file - restored to original state (no file)\n", d.targetDocFile)
-		}
-	}
 }
