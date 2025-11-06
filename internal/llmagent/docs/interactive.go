@@ -33,7 +33,7 @@ func (d *DocumentationAgent) getUserAction() (string, error) {
 
 // displayReadmeIfUpdated shows documentation content if it was updated
 func (d *DocumentationAgent) displayReadmeIfUpdated() bool {
-	readmeUpdated := d.checkReadmeUpdated()
+	readmeUpdated, _ := d.isReadmeUpdated()
 	if !readmeUpdated {
 		fmt.Printf("\n⚠️  %s file not updated\n", d.targetDocFile)
 		return false
@@ -78,7 +78,7 @@ func (d *DocumentationAgent) displayReadmeIfUpdated() bool {
 
 // handleReadmeUpdate checks if documentation file was updated and reports the result
 func (d *DocumentationAgent) handleReadmeUpdate() (bool, error) {
-	readmeUpdated := d.checkReadmeUpdated()
+	readmeUpdated, _ := d.isReadmeUpdated()
 	if !readmeUpdated {
 		return false, nil
 	}
@@ -140,12 +140,9 @@ func (d *DocumentationAgent) handleAcceptAction(readmeUpdated bool) (string, boo
 		// Validate preserved sections if we had original content
 		if d.originalReadmeContent != nil {
 			if newContent, err := d.readCurrentReadme(); err == nil {
-				warnings := d.validatePreservedSections(*d.originalReadmeContent, newContent)
-				if len(warnings) > 0 {
-					fmt.Println("⚠️  Warning: Some human-edited sections may not have been preserved:")
-					for _, warning := range warnings {
-						fmt.Printf("   - %s\n", warning)
-					}
+				preserved := d.arePreservedSectionsKept(*d.originalReadmeContent, newContent)
+				if !preserved {
+					fmt.Println("⚠️  Warning: Some human-edited sections may not have been preserved")
 					fmt.Println("   Please review the documentation to ensure important content wasn't lost.")
 				}
 			}

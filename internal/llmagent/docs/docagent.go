@@ -22,29 +22,34 @@ import (
 	"github.com/elastic/elastic-package/internal/tui"
 )
 
-type ResponseStatus int
-
 const (
-	// ResponseSuccess indicates the LLM response is valid and successful
-	ResponseSuccess ResponseStatus = iota
-	// ResponseError indicates the LLM encountered an error
-	ResponseError
-	// ResponseTokenLimit indicates the LLM hit a token/length limit
-	ResponseTokenLimit
-	// ResponseEmpty indicates the response was empty (may or may not indicate an error)
-	ResponseEmpty
+	// How far back in the conversation ResponseAnalysis will consider
+	analysisLookbackCount = 5
 )
 
-type ResponseAnalyzer struct {
+type responseStatus int
+
+const (
+	// responseSuccess indicates the LLM response is valid and successful
+	responseSuccess responseStatus = iota
+	// responseError indicates the LLM encountered an error
+	responseError
+	// responseTokenLimit indicates the LLM hit a token/length limit
+	responseTokenLimit
+	// responseEmpty indicates the response was empty (may or may not indicate an error)
+	responseEmpty
+)
+
+type responseAnalyzer struct {
 	successIndicators    []string
 	errorIndicators      []string
 	errorMarkers         []string
 	tokenLimitIndicators []string
 }
 
-// ResponseAnalysis contains the results of analyzing an LLM response
-type ResponseAnalysis struct {
-	Status  ResponseStatus
+// responseAnalysis contains the results of analyzing an LLM response
+type responseAnalysis struct {
+	Status  responseStatus
 	Message string // Optional message explaining the status
 }
 
@@ -56,7 +61,7 @@ type DocumentationAgent struct {
 	profile               *profile.Profile
 	originalReadmeContent *string // Stores original content for restoration on cancel
 	manifest              *packages.PackageManifest
-	responseAnalyzer      *ResponseAnalyzer
+	responseAnalyzer      *responseAnalyzer
 }
 
 type PromptContext struct {
@@ -69,6 +74,15 @@ type PromptContext struct {
 
 // NewDocumentationAgent creates a new documentation agent
 func NewDocumentationAgent(provider providers.LLMProvider, packageRoot string, targetDocFile string, profile *profile.Profile) (*DocumentationAgent, error) {
+	if provider == nil {
+		return nil, fmt.Errorf("provider cannot be nil")
+	}
+	if packageRoot == "" {
+		return nil, fmt.Errorf("packageRoot cannot be empty")
+	}
+	if targetDocFile == "" {
+		return nil, fmt.Errorf("targetDocFile cannot be empty")
+	}
 	// Create tools for package operations
 	packageTools := tools.PackageTools(packageRoot)
 
@@ -188,8 +202,8 @@ func (d *DocumentationAgent) runNonInteractiveMode(ctx context.Context, prompt s
 	analysis := d.responseAnalyzer.AnalyzeResponse(result.FinalContent, result.Conversation)
 
 	switch analysis.Status {
-	case ResponseTokenLimit:
-		logger.Debug("Recieved limit hit response from LLM.")
+	case responseTokenLimit:
+		// If token limit is hit, try again with another prompt which attempts to reduce context size.
 		fmt.Println("\n⚠️  LLM hit token limits. Switching to section-based generation...")
 		newPrompt, err := d.handleTokenLimitResponse(result.FinalContent)
 		if err != nil {
@@ -202,12 +216,11 @@ func (d *DocumentationAgent) runNonInteractiveMode(ctx context.Context, prompt s
 		}
 
 		// Check if documentation file was successfully updated after retry
-		if updated, err := d.handleReadmeUpdate(); updated {
+		if updated, _ := d.handleReadmeUpdate(); updated {
 			fmt.Printf("\n📄 %s was updated successfully with section-based approach!\n", d.targetDocFile)
-			return err
+			return nil
 		}
-	case ResponseError:
-		logger.Error("Recieved error response from LLM.")
+	case responseError:
 		fmt.Println("\n❌ Error detected in LLM response.")
 		fmt.Println("In non-interactive mode, exiting due to error.")
 		return fmt.Errorf("LLM agent encountered an error: %s", result.FinalContent)
@@ -219,7 +232,7 @@ func (d *DocumentationAgent) runNonInteractiveMode(ctx context.Context, prompt s
 		return nil
 	}
 
-	// Second attempt with specific instructions
+	// If documentation was not updated, but there was no error response, make another attempt with specific instructions
 	fmt.Printf("⚠️  %s was not updated. Trying again with specific instructions...\n", d.targetDocFile)
 	specificPrompt := fmt.Sprintf("You haven't updated the %s file yet. Please write the %s file in the _dev/build/docs/ directory based on your analysis. This is required to complete the task.", d.targetDocFile, d.targetDocFile)
 
@@ -243,6 +256,12 @@ func (d *DocumentationAgent) runInteractiveMode(ctx context.Context, prompt stri
 	fmt.Println()
 
 	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		// Execute the task
 		result, err := d.executeTaskWithLogging(ctx, prompt)
 		if err != nil {
@@ -252,7 +271,7 @@ func (d *DocumentationAgent) runInteractiveMode(ctx context.Context, prompt stri
 		analysis := d.responseAnalyzer.AnalyzeResponse(result.FinalContent, result.Conversation)
 
 		switch analysis.Status {
-		case ResponseTokenLimit:
+		case responseTokenLimit:
 			fmt.Println("\n⚠️  LLM hit token limits. Switching to section-based generation...")
 			newPrompt, err := d.handleTokenLimitResponse(result.FinalContent)
 			if err != nil {
@@ -260,7 +279,7 @@ func (d *DocumentationAgent) runInteractiveMode(ctx context.Context, prompt stri
 			}
 			prompt = newPrompt
 			continue
-		case ResponseError:
+		case responseError:
 			newPrompt, shouldContinue, err := d.handleInteractiveError()
 			if err != nil {
 				return err
@@ -328,8 +347,8 @@ func (d *DocumentationAgent) executeTaskWithLogging(ctx context.Context, prompt 
 //
 // These responses should be chosen to represent LLM responses to states, but are unlikely to appear in generated
 // documentation, which could trigger false positives.
-func NewResponseAnalyzer() *ResponseAnalyzer {
-	return &ResponseAnalyzer{
+func NewResponseAnalyzer() *responseAnalyzer {
+	return &responseAnalyzer{
 		successIndicators: []string{
 			"✅ success",
 			"successfully wrote",
@@ -367,26 +386,26 @@ func NewResponseAnalyzer() *ResponseAnalyzer {
 }
 
 // AnalyzeResponse will detect the LLM state based on it's response to us.
-func (ra *ResponseAnalyzer) AnalyzeResponse(content string, conversation []agent.ConversationEntry) ResponseAnalysis {
+func (ra *responseAnalyzer) AnalyzeResponse(content string, conversation []agent.ConversationEntry) responseAnalysis {
 	// Check for empty content
 	if strings.TrimSpace(content) == "" {
 		// Empty content might be okay if recent tools succeeded
 		if conversation != nil && ra.hasRecentSuccessfulTools(conversation) {
-			return ResponseAnalysis{
-				Status:  ResponseSuccess,
+			return responseAnalysis{
+				Status:  responseSuccess,
 				Message: "Empty response after successful tool execution",
 			}
 		}
-		return ResponseAnalysis{
-			Status:  ResponseEmpty,
+		return responseAnalysis{
+			Status:  responseEmpty,
 			Message: "Empty response without tool success context",
 		}
 	}
 
 	// Check for token limit first - this is NOT an error, it's recoverable
 	if ra.containsAnyIndicator(content, ra.tokenLimitIndicators) {
-		return ResponseAnalysis{
-			Status:  ResponseTokenLimit,
+		return responseAnalysis{
+			Status:  responseTokenLimit,
 			Message: "LLM hit token/length limits",
 		}
 	}
@@ -395,26 +414,26 @@ func (ra *ResponseAnalyzer) AnalyzeResponse(content string, conversation []agent
 	if ra.containsAnyIndicator(content, ra.errorIndicators) {
 		// However, if recent tools succeeded, this might be a false error report
 		if conversation != nil && ra.hasRecentSuccessfulTools(conversation) {
-			return ResponseAnalysis{
-				Status:  ResponseSuccess,
+			return responseAnalysis{
+				Status:  responseSuccess,
 				Message: "Error message detected but recent tools succeeded (likely false error)",
 			}
 		}
-		return ResponseAnalysis{
-			Status:  ResponseError,
+		return responseAnalysis{
+			Status:  responseError,
 			Message: "LLM reported an error",
 		}
 	}
 
 	// Default: success
-	return ResponseAnalysis{
-		Status:  ResponseSuccess,
+	return responseAnalysis{
+		Status:  responseSuccess,
 		Message: "Normal response",
 	}
 }
 
 // containsAnyIndicator checks if content contains any of the given indicators (case-insensitive)
-func (ra *ResponseAnalyzer) containsAnyIndicator(content string, indicators []string) bool {
+func (ra *responseAnalyzer) containsAnyIndicator(content string, indicators []string) bool {
 	contentLower := strings.ToLower(content)
 	for _, indicator := range indicators {
 		if strings.Contains(contentLower, strings.ToLower(indicator)) {
@@ -425,9 +444,9 @@ func (ra *ResponseAnalyzer) containsAnyIndicator(content string, indicators []st
 }
 
 // hasRecentSuccessfulTools checks if recent tool executions were successful
-func (ra *ResponseAnalyzer) hasRecentSuccessfulTools(conversation []agent.ConversationEntry) bool {
+func (ra *responseAnalyzer) hasRecentSuccessfulTools(conversation []agent.ConversationEntry) bool {
 	// Look at the last 5 conversation entries for tool results
-	lookbackCount := 5
+	lookbackCount := analysisLookbackCount
 	startIdx := len(conversation) - lookbackCount
 	if startIdx < 0 {
 		startIdx = 0
