@@ -14,13 +14,29 @@ import (
 	"github.com/elastic/elastic-package/internal/tui"
 )
 
+const (
+	ActionAccept  = "Accept and finalize"
+	ActionRequest = "Request changes"
+	ActionCancel  = "Cancel"
+
+	ActionTryAgain = "Try again"
+	ActionExit     = "Exit"
+)
+
+// ActionResult holds the result of a user action
+type ActionResult struct {
+	NewPrompt      string
+	ShouldContinue bool // true = continue loop, false = exit
+	Err            error
+}
+
 // getUserAction prompts the user for their next action
 func (d *DocumentationAgent) getUserAction() (string, error) {
 	selectPrompt := tui.NewSelect("What would you like to do?", []string{
-		"Accept and finalize",
-		"Request changes",
-		"Cancel",
-	}, "Accept and finalize")
+		ActionAccept,
+		ActionRequest,
+		ActionCancel,
+	}, ActionAccept)
 
 	var action string
 	err := tui.AskOne(selectPrompt, &action)
@@ -31,18 +47,12 @@ func (d *DocumentationAgent) getUserAction() (string, error) {
 	return action, nil
 }
 
-// displayReadmeIfUpdated shows documentation content if it was updated
-func (d *DocumentationAgent) displayReadmeIfUpdated() bool {
-	readmeUpdated, _ := d.isReadmeUpdated()
-	if !readmeUpdated {
-		fmt.Printf("\n⚠️  %s file not updated\n", d.targetDocFile)
-		return false
-	}
-
+// displayReadme shows documentation content in a browser or terminal UI
+func (d *DocumentationAgent) displayReadme() error {
 	sourceContent, err := d.readCurrentReadme()
 	if err != nil || sourceContent == "" {
 		fmt.Printf("\n⚠️  %s file exists but could not be read or is empty\n", d.targetDocFile)
-		return false
+		return fmt.Errorf("could not read file for rendering: %w", err)
 	}
 
 	// Try to render the content
@@ -50,7 +60,7 @@ func (d *DocumentationAgent) displayReadmeIfUpdated() bool {
 	if err != nil || !shouldBeRendered {
 		fmt.Printf("\n⚠️  The generated %s could not be rendered.\n", d.targetDocFile)
 		fmt.Println("It's recommended that you do not accept this version (ask for revisions or cancel).")
-		return true
+		return fmt.Errorf("could not render readme: %w", err)
 	}
 
 	// Show the processed/rendered content
@@ -72,19 +82,25 @@ func (d *DocumentationAgent) displayReadmeIfUpdated() bool {
 			fmt.Println(strings.Repeat("=", 70))
 		}
 	}
-
-	return true
+	return nil
 }
 
 // handleReadmeUpdate checks if documentation file was updated and reports the result
 func (d *DocumentationAgent) handleReadmeUpdate() (bool, error) {
-	readmeUpdated, _ := d.isReadmeUpdated()
+	readmeUpdated, err := d.isReadmeUpdated()
+	if err != nil {
+		return false, err
+	}
 	if !readmeUpdated {
 		return false, nil
 	}
 
+	// An empty file is not considered updated
 	content, err := d.readCurrentReadme()
 	if err != nil || content == "" {
+		if err == nil {
+			err = fmt.Errorf("readme file empty")
+		}
 		return false, err
 	}
 
@@ -97,9 +113,9 @@ func (d *DocumentationAgent) handleInteractiveError() (string, bool, error) {
 	fmt.Println("\n❌ Error detected in LLM response.")
 
 	errorPrompt := tui.NewSelect("What would you like to do?", []string{
-		"Try again",
-		"Exit",
-	}, "Try again")
+		ActionTryAgain,
+		ActionExit,
+	}, ActionTryAgain)
 
 	var errorAction string
 	err := tui.AskOne(errorPrompt, &errorAction)
@@ -107,35 +123,35 @@ func (d *DocumentationAgent) handleInteractiveError() (string, bool, error) {
 		return "", false, fmt.Errorf("prompt failed: %w", err)
 	}
 
-	if errorAction == "Exit" {
+	if errorAction == ActionExit {
 		fmt.Println("⚠️  Exiting due to LLM error.")
 		return "", false, nil
 	}
 
 	// Continue with retry prompt
-	promptCtx := d.createPromptContext(d.manifest, "The previous attempt encountered an error. Please try a different approach to analyze the package and create/update the documentation.")
+	promptCtx := d.createPromptContext(d.manifest, "The previous attempt encountered an error. Please try a different approach to analyze the package and update the documentation.")
 	prompt := d.buildPrompt(PromptTypeRevision, promptCtx)
 	return prompt, true, nil
 }
 
 // handleUserAction processes the user's chosen action
-func (d *DocumentationAgent) handleUserAction(action string, readmeUpdated bool) (string, bool, bool, error) {
+func (d *DocumentationAgent) handleUserAction(action string, readmeUpdated bool) ActionResult {
 	switch action {
-	case "Accept and finalize":
+	case ActionAccept:
 		return d.handleAcceptAction(readmeUpdated)
-	case "Request changes":
+	case ActionRequest:
 		return d.handleRequestChanges()
-	case "Cancel":
+	case ActionCancel:
 		fmt.Println("❌ Documentation update cancelled.")
 		d.restoreOriginalReadme()
-		return "", false, true, nil
+		return ActionResult{"", false, nil}
 	default:
-		return "", false, false, fmt.Errorf("unknown action: %s", action)
+		return ActionResult{"", false, fmt.Errorf("unknown action: %s", action)}
 	}
 }
 
 // handleAcceptAction handles the "Accept and finalize" action
-func (d *DocumentationAgent) handleAcceptAction(readmeUpdated bool) (string, bool, bool, error) {
+func (d *DocumentationAgent) handleAcceptAction(readmeUpdated bool) ActionResult {
 	if readmeUpdated {
 		// Validate preserved sections if we had original content
 		if d.originalReadmeContent != nil {
@@ -144,56 +160,57 @@ func (d *DocumentationAgent) handleAcceptAction(readmeUpdated bool) (string, boo
 				if !preserved {
 					fmt.Println("⚠️  Warning: Some human-edited sections may not have been preserved")
 					fmt.Println("   Please review the documentation to ensure important content wasn't lost.")
+					return ActionResult{"", false, fmt.Errorf("human-edited sections not preserved")}
 				}
 			}
 		}
 
 		fmt.Println("✅ Documentation update completed!")
-		return "", false, true, nil
+		return ActionResult{"", false, nil}
 	}
 
 	// Documentation file wasn't updated - ask user what to do
 	continuePrompt := tui.NewSelect(fmt.Sprintf("%s file wasn't updated. What would you like to do?", d.targetDocFile), []string{
-		"Try again",
-		"Exit anyway",
-	}, "Try again")
+		ActionTryAgain,
+		ActionExit,
+	}, ActionTryAgain)
 
 	var continueChoice string
 	err := tui.AskOne(continuePrompt, &continueChoice)
 	if err != nil {
-		return "", false, false, fmt.Errorf("prompt failed: %w", err)
+		return ActionResult{"", false, fmt.Errorf("prompt failed: %w", err)}
 	}
 
-	if continueChoice == "Exit anyway" {
+	if continueChoice == ActionExit {
 		fmt.Printf("⚠️  Exiting without creating %s file.\n", d.targetDocFile)
 		d.restoreOriginalReadme()
-		return "", false, true, nil
+		return ActionResult{"", false, nil}
 	}
 
 	fmt.Printf("🔄 Trying again to create %s...\n", d.targetDocFile)
 	promptCtx := d.createPromptContext(d.manifest, fmt.Sprintf("You haven't written a %s file yet. Please write the %s file in the _dev/build/docs/ directory based on your analysis.", d.targetDocFile, d.targetDocFile))
 	newPrompt := d.buildPrompt(PromptTypeRevision, promptCtx)
-	return newPrompt, true, false, nil
+	return ActionResult{newPrompt, true, nil}
 }
 
 // handleRequestChanges handles the "Request changes" action
-func (d *DocumentationAgent) handleRequestChanges() (string, bool, bool, error) {
+func (d *DocumentationAgent) handleRequestChanges() ActionResult {
 	changes, err := tui.AskTextArea("What changes would you like to make to the documentation?")
 	if err != nil {
 		// Check if user cancelled
 		if errors.Is(err, tui.ErrCancelled) {
 			fmt.Println("⚠️  Changes request cancelled.")
-			return "", true, false, nil // Continue the loop
+			return ActionResult{"", true, nil} // Continue the loop
 		}
-		return "", false, false, fmt.Errorf("prompt failed: %w", err)
+		return ActionResult{"", false, fmt.Errorf("prompt failed: %w", err)}
 	}
 
 	// Check if no changes were provided
 	if strings.TrimSpace(changes) == "" {
 		fmt.Println("⚠️  No changes specified. Please try again.")
-		return "", true, false, nil // Continue the loop
+		return ActionResult{"", true, nil} // Continue the loop
 	}
 	promptCtx := d.createPromptContext(d.manifest, changes)
 	newPrompt := d.buildPrompt(PromptTypeRevision, promptCtx)
-	return newPrompt, true, false, nil
+	return ActionResult{newPrompt, true, nil}
 }

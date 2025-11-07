@@ -10,6 +10,12 @@ import (
 	"strings"
 
 	"github.com/elastic/elastic-package/internal/llmagent/providers"
+	"github.com/elastic/elastic-package/internal/logger"
+)
+
+const (
+	maxIterations        = 15
+	maxRecentToolHistory = 5
 )
 
 // Agent represents an LLM agent that can use tools
@@ -59,12 +65,11 @@ func (a *Agent) ExecuteTask(ctx context.Context, prompt string) (*TaskResult, er
 		Content: prompt,
 	})
 
-	maxIterations := 15
 	for i := 0; i < maxIterations; i++ {
 		// Build the full prompt with conversation history
 		fullPrompt := a.buildPrompt(conversation)
 
-		fmt.Printf("iterating number %d: we have %d tools\n", i, len(a.tools))
+		logger.Debugf("iterating number %d: we have %d tools\n", i, len(a.tools))
 		// Get response from LLM
 		response, err := a.provider.GenerateResponse(ctx, fullPrompt, a.tools)
 		if err != nil {
@@ -137,9 +142,9 @@ func (a *Agent) ExecuteTask(ctx context.Context, prompt string) (*TaskResult, er
 					}
 				}
 
-				// Track recent tool executions (keep last 5)
+				// Track recent tool executions
 				recentTools = append(recentTools, toolInfo)
-				if len(recentTools) > 5 {
+				if len(recentTools) > maxRecentToolHistory {
 					recentTools = recentTools[1:]
 				}
 			}

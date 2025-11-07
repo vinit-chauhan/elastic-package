@@ -678,9 +678,6 @@ Combine with --modify-prompt "instructions" for targeted non-interactive changes
 If no LLM provider is configured, this command will print instructions for updating the documentation manually.
 
 Configuration options for LLM providers (environment variables or profile config):
-- BEDROCK_API_KEY / llm.bedrock.api_key: API key for Amazon Bedrock
-- BEDROCK_REGION / llm.bedrock.region: AWS region (defaults to us-east-1)
-- BEDROCK_MODEL / llm.bedrock.model: Model ID (defaults to anthropic.claude-3-5-sonnet-20241022-v2:0)
 - GEMINI_API_KEY / llm.gemini.api_key: API key for Gemini
 - GEMINI_MODEL / llm.gemini.model: Model ID (defaults to gemini-2.5-pro)
 - LOCAL_LLM_ENDPOINT / llm.local.endpoint: Endpoint for local LLM server
@@ -780,9 +777,6 @@ If no LLM provider is configured, the command will print manual instructions for
 
 You can configure LLM providers through **profile settings** (in `~/.elastic-package/profiles/<profile>/config.yml`) as an alternative to environment variables:
 
-* `llm.bedrock.api_key`: API key for Amazon Bedrock LLM services
-* `llm.bedrock.region`: AWS region for Bedrock services (defaults to `us-east-1`)
-* `llm.bedrock.model`: Bedrock model ID (defaults to `anthropic.claude-3-5-sonnet-20241022-v2:0`)
 * `llm.gemini.api_key`: API key for Google Gemini LLM services  
 * `llm.gemini.model`: Gemini model ID (defaults to `gemini-2.5-pro`)
 * `llm.local.endpoint`: Endpoint URL for local OpenAI-compatible LLM servers
@@ -790,7 +784,7 @@ You can configure LLM providers through **profile settings** (in `~/.elastic-pac
 * `llm.local.api_key`: API key for local LLM servers (optional, if authentication is required)
 * `llm.external_prompts`: Enable loading custom prompt files from profile or data directory (defaults to `false`)
 
-Environment variables (e.g., `BEDROCK_API_KEY`, `GEMINI_API_KEY`, `LOCAL_LLM_ENDPOINT`) take precedence over profile configuration.
+Environment variables (e.g., `GEMINI_API_KEY`, `LOCAL_LLM_ENDPOINT`) take precedence over profile configuration.
 
 #### Usage Examples
 
@@ -896,9 +890,6 @@ There are available some environment variables that could be used to change some
     - `ELASTIC_PACKAGE_ESMETRICSTORE_CA_CERT`: Path to the CA certificate to connect to the Elastic stack services.
 
 - To configure LLM providers for AI-powered documentation generation (`elastic-package update documentation`):
-    - `BEDROCK_API_KEY`: API key for Amazon Bedrock LLM services
-    - `BEDROCK_REGION`: AWS region for Bedrock services (defaults to `us-east-1`)
-    - `BEDROCK_MODEL`: Bedrock model ID (defaults to `anthropic.claude-3-5-sonnet-20241022-v2:0`)
     - `GEMINI_API_KEY`: API key for Gemini LLM services
     - `GEMINI_MODEL`: Gemini model ID (defaults to `gemini-2.5-pro`)
     - `LOCAL_LLM_ENDPOINT`: Endpoint URL for local OpenAI-compatible LLM servers.

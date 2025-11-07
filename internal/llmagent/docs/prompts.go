@@ -16,6 +16,12 @@ import (
 	"github.com/elastic/elastic-package/internal/profile"
 )
 
+const (
+	promptFileInitial  = "initial_prompt.txt"
+	promptFileRevision = "revision_prompt.txt"
+	promptFileLimitHit = "limit_hit_prompt.txt"
+)
+
 type PromptType int
 
 const (
@@ -60,6 +66,7 @@ func loadPromptFile(filename string, embeddedContent string, profile *profile.Pr
 
 	// Fall back to embedded content
 	logger.Debugf("External prompt file not found, using embedded content for: %s", filename)
+	fmt.Printf("⚠️  Warning: External prompt file not found, using embedded content for: %s", filename)
 	return embeddedContent
 }
 
@@ -85,15 +92,15 @@ func (d *DocumentationAgent) buildPrompt(promptType PromptType, ctx PromptContex
 
 	switch promptType {
 	case PromptTypeInitial:
-		promptFile = "initial_prompt.txt"
+		promptFile = promptFileInitial
 		embeddedContent = InitialPrompt
 		formatArgs = d.buildInitialPromptArgs(ctx)
 	case PromptTypeRevision:
-		promptFile = "revision_prompt.txt"
+		promptFile = promptFileRevision
 		embeddedContent = RevisionPrompt
 		formatArgs = d.buildRevisionPromptArgs(ctx)
 	case PromptTypeSectionBased:
-		promptFile = "limit_hit_prompt.txt"
+		promptFile = promptFileLimitHit
 		embeddedContent = LimitHitPrompt
 		formatArgs = d.buildSectionBasedPromptArgs(ctx)
 	}
@@ -117,49 +124,49 @@ func (d *DocumentationAgent) buildPrompt(promptType PromptType, ctx PromptContex
 // buildInitialPromptArgs prepares arguments for initial prompt
 func (d *DocumentationAgent) buildInitialPromptArgs(ctx PromptContext) []interface{} {
 	return []interface{}{
-		ctx.TargetDocFile, // Line 5: file path in task description
+		ctx.TargetDocFile, // file path in task description
 		ctx.Manifest.Name,
 		ctx.Manifest.Title,
 		ctx.Manifest.Type,
 		ctx.Manifest.Version,
 		ctx.Manifest.Description,
-		ctx.TargetDocFile, // Line 16: file restriction directive
-		ctx.TargetDocFile, // Line 33: tool usage guideline
-		ctx.TargetDocFile, // Line 43: initial analysis step
-		ctx.TargetDocFile, // Line 69: write results step
+		ctx.TargetDocFile, // file restriction directive
+		ctx.TargetDocFile, // tool usage guideline
+		ctx.TargetDocFile, // initial analysis step
+		ctx.TargetDocFile, // write results step
 	}
 }
 
 // buildRevisionPromptArgs prepares arguments for revision prompt
 func (d *DocumentationAgent) buildRevisionPromptArgs(ctx PromptContext) []interface{} {
 	return []interface{}{
-		ctx.TargetDocFile, // Line 5: target documentation file label
+		ctx.TargetDocFile, // target documentation file label
 		ctx.Manifest.Name,
 		ctx.Manifest.Title,
 		ctx.Manifest.Type,
 		ctx.Manifest.Version,
 		ctx.Manifest.Description,
-		ctx.TargetDocFile, // Line 15: file restriction directive
-		ctx.TargetDocFile, // Line 17: read current content directive
-		ctx.TargetDocFile, // Line 35: tool usage guideline
-		ctx.TargetDocFile, // Line 38: step 1 - read current file
-		ctx.TargetDocFile, // Line 44: step 7 - write documentation
-		ctx.Changes,       // Line 47: user-requested changes
+		ctx.TargetDocFile, // file restriction directive
+		ctx.TargetDocFile, // read current content directive
+		ctx.TargetDocFile, // tool usage guideline
+		ctx.TargetDocFile, // step 1 - read current file
+		ctx.TargetDocFile, // step 7 - write documentation
+		ctx.Changes,       // user-requested changes
 	}
 }
 
 // buildSectionBasedPromptArgs prepares arguments for section-based prompt
 func (d *DocumentationAgent) buildSectionBasedPromptArgs(ctx PromptContext) []interface{} {
 	return []interface{}{
-		ctx.TargetDocFile, // Line 3: task description
-		ctx.TargetDocFile, // Line 5: target documentation file label
+		ctx.TargetDocFile, // task description
+		ctx.TargetDocFile, // target documentation file label
 		ctx.Manifest.Name,
 		ctx.Manifest.Title,
 		ctx.Manifest.Type,
 		ctx.Manifest.Version,
 		ctx.Manifest.Description,
-		ctx.TargetDocFile, // Line 33: write_file tool description
-		ctx.TargetDocFile, // Line 42: step 2 - read current file
+		ctx.TargetDocFile, // write_file tool description
+		ctx.TargetDocFile, // step 2 - read current file
 	}
 }
 
@@ -173,32 +180,4 @@ func (d *DocumentationAgent) createPromptContext(manifest *packages.PackageManif
 		ServiceInfo:    serviceInfo,
 		HasServiceInfo: hasServiceInfo,
 	}
-}
-
-// handleTokenLimitResponse creates a section-based prompt when LLM hits token limits
-func (d *DocumentationAgent) handleTokenLimitResponse(originalResponse string) (string, error) {
-	// Read package manifest for context
-	manifest, err := packages.ReadPackageManifestFromPackageRoot(d.packageRoot)
-	if err != nil {
-		return "", fmt.Errorf("failed to read package manifest: %w", err)
-	}
-
-	// Create a section-based generation prompt
-	sectionBasedPrompt := d.buildSectionBasedPrompt(manifest)
-	return sectionBasedPrompt, nil
-}
-
-// buildSectionBasedPrompt creates a prompt for generating documentation in sections
-func (d *DocumentationAgent) buildSectionBasedPrompt(manifest *packages.PackageManifest) string {
-	promptContent := loadPromptFile("limit_hit_prompt.txt", LimitHitPrompt, d.profile)
-	return fmt.Sprintf(promptContent,
-		d.targetDocFile, // Line 3: task description
-		d.targetDocFile, // Line 5: target documentation file label
-		manifest.Name,
-		manifest.Title,
-		manifest.Type,
-		manifest.Version,
-		manifest.Description,
-		d.targetDocFile, // Line 33: write_file tool description
-		d.targetDocFile) // Line 42: step 2 - read current file
 }

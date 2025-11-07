@@ -48,9 +48,6 @@ Combine with --modify-prompt "instructions" for targeted non-interactive changes
 If no LLM provider is configured, this command will print instructions for updating the documentation manually.
 
 Configuration options for LLM providers (environment variables or profile config):
-- BEDROCK_API_KEY / llm.bedrock.api_key: API key for Amazon Bedrock
-- BEDROCK_REGION / llm.bedrock.region: AWS region (defaults to us-east-1)
-- BEDROCK_MODEL / llm.bedrock.model: Model ID (defaults to anthropic.claude-3-5-sonnet-20241022-v2:0)
 - GEMINI_API_KEY / llm.gemini.api_key: API key for Gemini
 - GEMINI_MODEL / llm.gemini.model: Model ID (defaults to gemini-2.5-pro)
 - LOCAL_LLM_ENDPOINT / llm.local.endpoint: Endpoint for local LLM server
@@ -189,11 +186,10 @@ func updateDocumentationCommandAction(cmd *cobra.Command, args []string) error {
 	}
 
 	// Check for API key availability for different providers (environment variables take precedence over profile config)
-	bedrockAPIKey := getConfigValue(profile, "BEDROCK_API_KEY", "llm.bedrock.api_key", "")
 	googleAPIKey := getConfigValue(profile, "GEMINI_API_KEY", "llm.gemini.api_key", "")
 	localEndpoint := getConfigValue(profile, "LOCAL_LLM_ENDPOINT", "llm.local.endpoint", "")
 
-	if bedrockAPIKey == "" && googleAPIKey == "" && localEndpoint == "" {
+	if googleAPIKey == "" && localEndpoint == "" {
 		// Use standardized TUI colors for consistent output
 		cmd.Println(tui.Warning("AI agent is not available (no LLM provider API key set)."))
 		cmd.Println()
@@ -202,7 +198,6 @@ func updateDocumentationCommandAction(cmd *cobra.Command, args []string) error {
 		cmd.Println(tui.Info("  2. Run `elastic-package build`"))
 		cmd.Println()
 		cmd.Println(tui.Info("For AI-powered documentation updates, configure one of these LLM providers:"))
-		cmd.Println(tui.Info("  - Amazon Bedrock: Set BEDROCK_API_KEY or add llm.bedrock.api_key to profile config"))
 		cmd.Println(tui.Info("  - Gemini: Set GEMINI_API_KEY or add llm.gemini.api_key to profile config"))
 		cmd.Println(tui.Info("  - Local LLM: Set LOCAL_LLM_ENDPOINT or add llm.local.endpoint to profile config"))
 		cmd.Println()
@@ -260,17 +255,7 @@ func updateDocumentationCommandAction(cmd *cobra.Command, args []string) error {
 
 	// Create the LLM provider based on available API keys/endpoints
 	var provider providers.LLMProvider
-	if bedrockAPIKey != "" {
-		region := getConfigValue(profile, "BEDROCK_REGION", "llm.bedrock.region", "us-east-1")
-		modelID := getConfigValue(profile, "BEDROCK_MODEL", "llm.bedrock.model", "anthropic.claude-3-5-sonnet-20241022-v2:0")
-		provider = providers.NewBedrockProvider(providers.BedrockConfig{
-			APIKey:    bedrockAPIKey,
-			Region:    region,
-			ModelID:   modelID,
-			MaxTokens: 4096,
-		})
-		cmd.Printf("Using Amazon Bedrock provider with region: %s, model: %s\n", region, modelID)
-	} else if googleAPIKey != "" {
+	if googleAPIKey != "" {
 		modelID := getConfigValue(profile, "GEMINI_MODEL", "llm.gemini.model", "gemini-2.5-pro")
 		provider = providers.NewGeminiProvider(providers.GeminiConfig{
 			APIKey:  googleAPIKey,
@@ -287,7 +272,7 @@ func updateDocumentationCommandAction(cmd *cobra.Command, args []string) error {
 		})
 		cmd.Printf("Using Local LLM provider with endpoint: %s, model: %s\n", localEndpoint, modelID)
 	} else {
-		return fmt.Errorf("Unknown LLM provider selected")
+		return fmt.Errorf("unknown LLM provider selected")
 	}
 
 	// Create the documentation agent

@@ -33,14 +33,6 @@
 ## LLM Agent Configuration
 ## Configure LLM providers for documentation generation and other AI-assisted features
 
-## Amazon Bedrock
-# Amazon Bedrock API key for LLM services
-# llm.bedrock.api_key: "your-bedrock-api-key"
-# AWS region for Bedrock services (optional, defaults to us-east-1)
-# llm.bedrock.region: "us-east-1"
-# Bedrock model ID (optional, defaults to anthropic.claude-3-5-sonnet-20241022-v2:0)
-# llm.bedrock.model: "anthropic.claude-3-5-sonnet-20241022-v2:0"
-
 ## Gemini
 # Gemini API key for Gemini models
 # llm.gemini.api_key: "your-gemini-api-key"

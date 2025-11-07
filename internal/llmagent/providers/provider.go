@@ -8,7 +8,7 @@ import (
 	"context"
 )
 
-// LLMProvider defines the interface for different LLM providers (Bedrock, OpenAI, etc.)
+// LLMProvider defines the interface for different LLM providers
 type LLMProvider interface {
 	// GenerateResponse sends a prompt to the LLM and returns the response
 	GenerateResponse(ctx context.Context, prompt string, tools []Tool) (*LLMResponse, error)
@@ -70,7 +70,6 @@ type ToolResult struct {
 
 // Compile-time interface checks to ensure all provider types implement the LLMProvider interface
 var (
-	_ LLMProvider = &BedrockProvider{}
 	_ LLMProvider = &GeminiProvider{}
 	_ LLMProvider = &LocalProvider{}
 )

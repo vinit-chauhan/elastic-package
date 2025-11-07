@@ -293,24 +293,33 @@ func (d *DocumentationAgent) runInteractiveMode(ctx context.Context, prompt stri
 		}
 
 		// Display README content if updated
-		readmeUpdated := d.displayReadmeIfUpdated()
+		readmeUpdated, err := d.isReadmeUpdated()
+		if err != nil {
+			logger.Debugf("could not determine if readme is updated: %w", err)
+		}
+		if readmeUpdated {
+			err = d.displayReadme()
+			if err != nil {
+				// This may be recoverable, only log the error
+				logger.Debugf("displaying readme: %w", err)
+			}
+		}
 
 		// Get and handle user action
 		action, err := d.getUserAction()
 		if err != nil {
 			return err
 		}
-		newPrompt, shouldContinue, shouldExit, err := d.handleUserAction(action, readmeUpdated)
-		if err != nil {
-			return err
+		actionResult := d.handleUserAction(action, readmeUpdated)
+		if actionResult.Err != nil {
+			return actionResult.Err
 		}
-		if shouldExit {
-			return nil
-		}
-		if shouldContinue {
-			prompt = newPrompt
+		if actionResult.ShouldContinue {
+			prompt = actionResult.NewPrompt
 			continue
 		}
+		// If we reach here, should exit
+		return nil
 	}
 }
 
@@ -467,4 +476,14 @@ func (ra *responseAnalyzer) hasRecentSuccessfulTools(conversation []agent.Conver
 		}
 	}
 	return false
+}
+
+// handleTokenLimitResponse creates a section-based prompt when LLM hits token limits
+func (d *DocumentationAgent) handleTokenLimitResponse(originalResponse string) (string, error) {
+	// Read package manifest for context
+	promptCtx := d.createPromptContext(d.manifest, "")
+
+	// Create a section-based generation prompt
+	sectionBasedPrompt := d.buildPrompt(PromptTypeSectionBased, promptCtx)
+	return sectionBasedPrompt, nil
 }
