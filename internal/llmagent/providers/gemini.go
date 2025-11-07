@@ -9,10 +9,20 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/elastic/elastic-package/internal/logger"
+)
+
+const (
+	finishReasonStop       = "STOP"
+	finishReasonMalformed  = "MALFORMED_FUNCTION_CALL"
+	finishReasonMaxTokens  = "MAX_TOKENS"
+	finishReasonSafety     = "SAFETY"
+	finishReasonRecitation = "RECITATION"
 )
 
 // GeminiProvider implements LLMProvider for Gemini
@@ -164,7 +174,9 @@ func (g *GeminiProvider) GenerateResponse(ctx context.Context, prompt string, to
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("gemini API returned status %d", resp.StatusCode)
+		var errBody bytes.Buffer
+		io.Copy(&errBody, resp.Body)
+		return nil, fmt.Errorf("gemini API returned status %d: &s", resp.StatusCode, errBody.String())
 	}
 
 	// Parse response
@@ -201,21 +213,21 @@ func (g *GeminiProvider) GenerateResponse(ctx context.Context, prompt string, to
 
 		// Handle different finish reasons
 		switch candidate.FinishReason {
-		case "STOP":
+		case finishReasonStop:
 			response.Finished = true
-		case "MALFORMED_FUNCTION_CALL":
+		case finishReasonMalformed:
 			logger.Debugf("Gemini API returned malformed function call - treating as error")
 			response.Finished = true
 			response.Content = "I encountered an error while trying to call a function. Let me try a different approach."
-		case "MAX_TOKENS":
+		case finishReasonMaxTokens:
 			logger.Debugf("Gemini API hit max tokens limit")
 			response.Finished = true
 			response.Content = "I reached the maximum response length. Please try breaking this into smaller tasks."
-		case "SAFETY":
+		case finishReasonSafety:
 			logger.Debugf("Gemini API response filtered by safety policies")
 			response.Finished = true
 			response.Content = "My response was filtered due to safety policies. Please rephrase your request."
-		case "RECITATION":
+		case finishReasonRecitation:
 			logger.Debugf("Gemini API response filtered due to recitation")
 			response.Finished = true
 			response.Content = "My response was filtered due to potential copyright issues. Please rephrase your request."
@@ -252,14 +264,14 @@ func (g *GeminiProvider) GenerateResponse(ctx context.Context, prompt string, to
 
 		// Join all text parts (only override if we don't have error content from finish reason)
 		if len(textParts) > 0 && response.Content == "" {
-			// Concatenate all text parts to preserve complete response
-			response.Content = ""
+			var builder strings.Builder
 			for i, text := range textParts {
 				if i > 0 {
-					response.Content += "\n" // Add newline between parts for readability
+					builder.WriteString("\n")
 				}
-				response.Content += text
+				builder.WriteString(text)
 			}
+			response.Content = builder.String()
 		}
 	}
 

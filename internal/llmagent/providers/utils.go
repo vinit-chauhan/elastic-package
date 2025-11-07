@@ -11,5 +11,5 @@ func maskAPIKey(apiKey string) string {
 	if len(apiKey) <= 12 {
 		return strings.Repeat("*", len(apiKey))
 	}
-	return apiKey[:6] + strings.Repeat("*", len(apiKey)-6)
+	return strings.Repeat("*", len(apiKey)-4) + apiKey[len(apiKey)-4:]
 }

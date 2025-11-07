@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"github.com/spf13/cobra"
 
@@ -74,13 +75,11 @@ func getConfigValue(profile *profile.Profile, envVar, configKey, defaultValue st
 func discoverDocumentationFiles(packageRoot string) ([]string, error) {
 	docsDir := filepath.Join(packageRoot, "_dev", "build", "docs")
 
-	// Check if directory exists
-	if _, err := os.Stat(docsDir); os.IsNotExist(err) {
-		return []string{"README.md"}, nil // Default if directory doesn't exist
-	}
-
 	entries, err := os.ReadDir(docsDir)
 	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{"README.md"}, nil
+		}
 		return nil, fmt.Errorf("failed to read docs directory: %w", err)
 	}
 
@@ -96,22 +95,18 @@ func discoverDocumentationFiles(packageRoot string) ([]string, error) {
 		return []string{"README.md"}, nil
 	}
 
-	// Sort with README.md first if it exists
-	sort := func(files []string) []string {
-		var result []string
-		var others []string
-
-		for _, f := range files {
-			if f == "README.md" {
-				result = append(result, f)
-			} else {
-				others = append(others, f)
-			}
+	// Sort with README.md first, others alphabetically
+	sort.Slice(mdFiles, func(i, j int) bool {
+		if mdFiles[i] == "README.md" {
+			return true
 		}
-		return append(result, others...)
-	}
+		if mdFiles[j] == "README.md" {
+			return false
+		}
+		return mdFiles[i] < mdFiles[j]
+	})
 
-	return sort(mdFiles), nil
+	return mdFiles, nil
 }
 
 // selectDocumentationFile determines which documentation file to update
@@ -158,6 +153,53 @@ func selectDocumentationFile(cmd *cobra.Command, packageRoot string, nonInteract
 	return selectedFile, nil
 }
 
+// printNoProviderInstructions displays instructions when no LLM provider is configured
+func printNoProviderInstructions(cmd *cobra.Command) {
+	cmd.Println(tui.Warning("AI agent is not available (no LLM provider API key set)."))
+	cmd.Println()
+	cmd.Println(tui.Info("To update the documentation manually:"))
+	cmd.Println(tui.Info("  1. Edit markdown files in `_dev/build/docs/` (e.g., README.md). Please follow the documentation guidelines from https://www.elastic.co/docs/extend/integrations/documentation-guidelines."))
+	cmd.Println(tui.Info("  2. Run `elastic-package build`"))
+	cmd.Println()
+	cmd.Println(tui.Info("For AI-powered documentation updates, configure one of these LLM providers:"))
+	cmd.Println(tui.Info("  - Gemini: Set GEMINI_API_KEY or add llm.gemini.api_key to profile config"))
+	cmd.Println(tui.Info("  - Local LLM: Set LOCAL_LLM_ENDPOINT or add llm.local.endpoint to profile config"))
+	cmd.Println()
+	cmd.Println(tui.Info("Profile configuration: ~/.elastic-package/profiles/<profile>/config.yml"))
+}
+
+// createLLMProvider creates and configures an LLM provider based on available configuration
+func createLLMProvider(cmd *cobra.Command, profile *profile.Profile) (providers.LLMProvider, error) {
+	geminiAPIKey := getConfigValue(profile, "GEMINI_API_KEY", "llm.gemini.api_key", "")
+	localEndpoint := getConfigValue(profile, "LOCAL_LLM_ENDPOINT", "llm.local.endpoint", "")
+
+	if geminiAPIKey == "" && localEndpoint == "" {
+		return nil, nil // No provider available
+	}
+
+	if geminiAPIKey != "" {
+		modelID := getConfigValue(profile, "GEMINI_MODEL", "llm.gemini.model", "gemini-2.5-pro")
+		cmd.Printf("Using Gemini provider with model: %s\n", modelID)
+		return providers.NewGeminiProvider(providers.GeminiConfig{
+			APIKey:  geminiAPIKey,
+			ModelID: modelID,
+		}), nil
+	}
+
+	if localEndpoint != "" {
+		modelID := getConfigValue(profile, "LOCAL_LLM_MODEL", "llm.local.model", "llama2")
+		localAPIKey := getConfigValue(profile, "LOCAL_LLM_API_KEY", "llm.local.api_key", "")
+		cmd.Printf("Using Local LLM provider with endpoint: %s, model: %s\n", localEndpoint, modelID)
+		return providers.NewLocalProvider(providers.LocalConfig{
+			Endpoint: localEndpoint,
+			ModelID:  modelID,
+			APIKey:   localAPIKey,
+		}), nil
+	}
+
+	return nil, fmt.Errorf("unknown LLM provider selected")
+}
+
 func updateDocumentationCommandAction(cmd *cobra.Command, args []string) error {
 	packageRoot, found, err := packages.FindPackageRoot()
 	if err != nil {
@@ -185,23 +227,14 @@ func updateDocumentationCommandAction(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get profile: %w", err)
 	}
 
-	// Check for API key availability for different providers (environment variables take precedence over profile config)
-	googleAPIKey := getConfigValue(profile, "GEMINI_API_KEY", "llm.gemini.api_key", "")
-	localEndpoint := getConfigValue(profile, "LOCAL_LLM_ENDPOINT", "llm.local.endpoint", "")
+	// Create LLM provider based on available configuration
+	provider, err := createLLMProvider(cmd, profile)
+	if err != nil {
+		return fmt.Errorf("failed to create LLM provider: %w", err)
+	}
 
-	if googleAPIKey == "" && localEndpoint == "" {
-		// Use standardized TUI colors for consistent output
-		cmd.Println(tui.Warning("AI agent is not available (no LLM provider API key set)."))
-		cmd.Println()
-		cmd.Println(tui.Info("To update the documentation manually:"))
-		cmd.Println(tui.Info("  1. Edit markdown files in `_dev/build/docs/` (e.g., README.md). Please follow the documentation guidelines from https://www.elastic.co/docs/extend/integrations/documentation-guidelines."))
-		cmd.Println(tui.Info("  2. Run `elastic-package build`"))
-		cmd.Println()
-		cmd.Println(tui.Info("For AI-powered documentation updates, configure one of these LLM providers:"))
-		cmd.Println(tui.Info("  - Gemini: Set GEMINI_API_KEY or add llm.gemini.api_key to profile config"))
-		cmd.Println(tui.Info("  - Local LLM: Set LOCAL_LLM_ENDPOINT or add llm.local.endpoint to profile config"))
-		cmd.Println()
-		cmd.Println(tui.Info("Profile configuration: ~/.elastic-package/profiles/<profile>/config.yml"))
+	if provider == nil {
+		printNoProviderInstructions(cmd)
 		return nil
 	}
 
@@ -215,8 +248,8 @@ func updateDocumentationCommandAction(cmd *cobra.Command, args []string) error {
 		cmd.Printf("Selected documentation file: %s\n", targetDocFile)
 	}
 
-	// Determine the mode (rewrite or modify)
-	useModifyMode := modifyPrompt != ""
+	// Determine the mode based on user input
+	var useModifyMode bool
 
 	// Skip confirmation prompt in non-interactive mode
 	if !nonInteractive {
@@ -248,31 +281,12 @@ func updateDocumentationCommandAction(cmd *cobra.Command, args []string) error {
 			}
 
 			useModifyMode = mode == "Modify (targeted changes)"
+		} else {
+			useModifyMode = true
 		}
 	} else {
 		cmd.Println("Running in non-interactive mode - proceeding automatically.")
-	}
-
-	// Create the LLM provider based on available API keys/endpoints
-	var provider providers.LLMProvider
-	if googleAPIKey != "" {
-		modelID := getConfigValue(profile, "GEMINI_MODEL", "llm.gemini.model", "gemini-2.5-pro")
-		provider = providers.NewGeminiProvider(providers.GeminiConfig{
-			APIKey:  googleAPIKey,
-			ModelID: modelID,
-		})
-		cmd.Printf("Using Gemini provider with model: %s\n", modelID)
-	} else if localEndpoint != "" {
-		modelID := getConfigValue(profile, "LOCAL_LLM_MODEL", "llm.local.model", "llama2")
-		localAPIKey := getConfigValue(profile, "LOCAL_LLM_API_KEY", "llm.local.api_key", "")
-		provider = providers.NewLocalProvider(providers.LocalConfig{
-			Endpoint: localEndpoint,
-			ModelID:  modelID,
-			APIKey:   localAPIKey,
-		})
-		cmd.Printf("Using Local LLM provider with endpoint: %s, model: %s\n", localEndpoint, modelID)
-	} else {
-		return fmt.Errorf("unknown LLM provider selected")
+		useModifyMode = modifyPrompt != ""
 	}
 
 	// Create the documentation agent

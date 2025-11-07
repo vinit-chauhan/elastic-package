@@ -92,6 +92,39 @@ func PackageTools(packageRoot string) []providers.Tool {
 	}
 }
 
+// validatePathInRoot ensures the path stays within the root directory and is safe to access.
+// It protects against path traversal attacks and symlink attacks.
+func validatePathInRoot(packageRoot, userPath string) (string, error) {
+	fullPath := filepath.Join(packageRoot, userPath)
+
+	// Resolve symlinks to prevent symlink attacks
+	resolvedPath, err := filepath.EvalSymlinks(fullPath)
+	if err != nil {
+		// If file doesn't exist yet, that's okay - validate the directory structure
+		if os.IsNotExist(err) {
+			resolvedPath = filepath.Clean(fullPath)
+		} else {
+			return "", fmt.Errorf("failed to resolve path: %w", err)
+		}
+	}
+
+	// Resolve the package root too
+	resolvedRoot, err := filepath.EvalSymlinks(packageRoot)
+	if err != nil {
+		return "", fmt.Errorf("failed to resolve package root: %w", err)
+	}
+
+	// Security check: ensure we stay within package root
+	cleanPath := filepath.Clean(resolvedPath)
+	cleanRoot := filepath.Clean(resolvedRoot)
+	relPath, err := filepath.Rel(cleanRoot, cleanPath)
+	if err != nil || strings.HasPrefix(relPath, "..") {
+		return "", fmt.Errorf("path '%s' is outside package root", userPath)
+	}
+
+	return fullPath, nil
+}
+
 // listDirectoryHandler returns a handler for the list_directory tool
 func listDirectoryHandler(packageRoot string) providers.ToolHandler {
 	return func(ctx context.Context, arguments string) (*providers.ToolResult, error) {
@@ -103,16 +136,10 @@ func listDirectoryHandler(packageRoot string) providers.ToolHandler {
 			return &providers.ToolResult{Error: fmt.Sprintf("failed to parse arguments: %v", err)}, nil
 		}
 
-		// Construct the full path
-		fullPath := filepath.Join(packageRoot, args.Path)
-
-		// Security check: ensure we stay within package root
-		// Use filepath.Clean to resolve any "../" sequences, then check if it's still under packageRoot
-		cleanPath := filepath.Clean(fullPath)
-		cleanRoot := filepath.Clean(packageRoot)
-		relPath, relErr := filepath.Rel(cleanRoot, cleanPath)
-		if relErr != nil || strings.HasPrefix(relPath, "..") {
-			return &providers.ToolResult{Error: "access denied: path outside package root"}, nil
+		// Validate path security
+		fullPath, err := validatePathInRoot(packageRoot, args.Path)
+		if err != nil {
+			return &providers.ToolResult{Error: fmt.Sprintf("access denied: %v", err)}, nil
 		}
 
 		entries, err := os.ReadDir(fullPath)
@@ -159,19 +186,13 @@ func readFileHandler(packageRoot string) providers.ToolHandler {
 		// Block access to generated artifacts in docs/ directory, except docs/knowledge_base/
 		// which contains authoritative service information
 		if strings.HasPrefix(args.Path, "docs/") && !strings.HasPrefix(args.Path, "docs/knowledge_base/") {
-			return &providers.ToolResult{Error: "access denied: invalid path"}, nil
+			return &providers.ToolResult{Error: "access denied: cannot read generated documentation in docs/ (use _dev/build/docs/ instead)"}, nil
 		}
 
-		// Construct the full path
-		fullPath := filepath.Join(packageRoot, args.Path)
-
-		// Security check: ensure we stay within package root
-		// Use filepath.Clean to resolve any "../" sequences, then check if it's still under packageRoot
-		cleanPath := filepath.Clean(fullPath)
-		cleanRoot := filepath.Clean(packageRoot)
-		relPath, relErr := filepath.Rel(cleanRoot, cleanPath)
-		if relErr != nil || strings.HasPrefix(relPath, "..") {
-			return &providers.ToolResult{Error: "access denied: path outside package root"}, nil
+		// Validate path security
+		fullPath, err := validatePathInRoot(packageRoot, args.Path)
+		if err != nil {
+			return &providers.ToolResult{Error: fmt.Sprintf("access denied: %v", err)}, nil
 		}
 
 		content, err := os.ReadFile(fullPath)
@@ -195,16 +216,31 @@ func writeFileHandler(packageRoot string) providers.ToolHandler {
 			return &providers.ToolResult{Error: fmt.Sprintf("failed to parse arguments: %v", err)}, nil
 		}
 
-		// Construct the full path
-		fullPath := filepath.Join(packageRoot, args.Path)
+		// First validate against package root
+		fullPath, err := validatePathInRoot(packageRoot, args.Path)
+		if err != nil {
+			return &providers.ToolResult{Error: fmt.Sprintf("access denied: %v", err)}, nil
+		}
 
-		// Security check: ensure we stay within package root, and only write in "_dev/build/docs"
+		// Additional security check: ensure we only write in "_dev/build/docs"
 		allowedDir := filepath.Join(packageRoot, "_dev", "build", "docs")
+
+		// Resolve symlinks for the allowed directory too
+		resolvedAllowed, err := filepath.EvalSymlinks(allowedDir)
+		if err != nil {
+			// If the directory doesn't exist yet, use the clean path
+			if os.IsNotExist(err) {
+				resolvedAllowed = filepath.Clean(allowedDir)
+			} else {
+				return &providers.ToolResult{Error: fmt.Sprintf("failed to resolve allowed directory: %v", err)}, nil
+			}
+		}
+
 		cleanPath := filepath.Clean(fullPath)
-		cleanAllowed := filepath.Clean(allowedDir)
-		relPath, relErr := filepath.Rel(cleanAllowed, cleanPath)
-		if relErr != nil || strings.HasPrefix(relPath, "..") {
-			return &providers.ToolResult{Error: "access denied: path outside allowed directory"}, nil
+		cleanAllowed := filepath.Clean(resolvedAllowed)
+		relPath, err := filepath.Rel(cleanAllowed, cleanPath)
+		if err != nil || strings.HasPrefix(relPath, "..") {
+			return &providers.ToolResult{Error: fmt.Sprintf("access denied: path '%s' is outside allowed directory (_dev/build/docs/)", args.Path)}, nil
 		}
 
 		// Create directory if it doesn't exist

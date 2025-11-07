@@ -18,7 +18,7 @@ const (
 	maxRecentToolHistory = 5
 )
 
-// Agent represents an LLM agent that can use tools
+// Agent represents a generic LLM agent that can use tools
 type Agent struct {
 	provider providers.LLMProvider
 	tools    []providers.Tool

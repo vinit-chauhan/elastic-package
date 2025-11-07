@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"time"
 
@@ -31,49 +32,49 @@ type LocalConfig struct {
 }
 
 // OpenAI-compatible types for API communication
-type request struct {
-	Model       string    `json:"model"`
-	Messages    []message `json:"messages"`
-	MaxTokens   int       `json:"max_tokens,omitempty"`
-	Temperature float64   `json:"temperature,omitempty"`
-	Stream      bool      `json:"stream,omitempty"`
-	Tools       []tool    `json:"tools,omitempty"`
-	ToolChoice  string    `json:"tool_choice,omitempty"`
+type openaiRequest struct {
+	Model       string          `json:"model"`
+	Messages    []openaiMessage `json:"messages"`
+	MaxTokens   int             `json:"max_tokens,omitempty"`
+	Temperature float64         `json:"temperature,omitempty"`
+	Stream      bool            `json:"stream,omitempty"`
+	Tools       []openaiTool    `json:"tools,omitempty"`
+	ToolChoice  string          `json:"tool_choice,omitempty"`
 }
 
-type response struct {
+type openaiResponse struct {
 	Choices []choice `json:"choices"`
 	Usage   usage    `json:"usage,omitempty"`
 }
 
-type message struct {
-	Role      string     `json:"role"`
-	Content   string     `json:"content"`
-	ToolCalls []toolCall `json:"tool_calls,omitempty"`
+type openaiMessage struct {
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	ToolCalls []openaiToolCall `json:"tool_calls,omitempty"`
 }
 
-type tool struct {
-	Type     string   `json:"type"`
-	Function function `json:"function"`
+type openaiTool struct {
+	Type     string         `json:"type"`
+	Function openaiFunction `json:"function"`
 }
 
-type function struct {
+type openaiFunction struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
 	Parameters  map[string]interface{} `json:"parameters"`
 	Arguments   string                 `json:"arguments,omitempty"`
 }
 
-type toolCall struct {
-	ID       string   `json:"id"`
-	Type     string   `json:"type"`
-	Function function `json:"function"`
+type openaiToolCall struct {
+	ID       string         `json:"id"`
+	Type     string         `json:"type"`
+	Function openaiFunction `json:"function"`
 }
 
 type choice struct {
-	Index        int     `json:"index"`
-	Message      message `json:"message"`
-	FinishReason string  `json:"finish_reason"`
+	Index        int           `json:"index"`
+	Message      openaiMessage `json:"message"`
+	FinishReason string        `json:"finish_reason"`
 }
 
 type usage struct {
@@ -118,11 +119,11 @@ func (l *LocalProvider) Name() string {
 // GenerateResponse sends a prompt to the local LLM and returns the response
 func (l *LocalProvider) GenerateResponse(ctx context.Context, prompt string, tools []Tool) (*LLMResponse, error) {
 	// Convert tools to OpenAI format
-	openaiTools := make([]tool, len(tools))
+	openaiTools := make([]openaiTool, len(tools))
 	for i, t := range tools {
-		openaiTools[i] = tool{
+		openaiTools[i] = openaiTool{
 			Type: "function",
-			Function: function{
+			Function: openaiFunction{
 				Name:        t.Name,
 				Description: t.Description,
 				Parameters:  t.Parameters,
@@ -131,9 +132,9 @@ func (l *LocalProvider) GenerateResponse(ctx context.Context, prompt string, too
 	}
 
 	// Prepare request payload using OpenAI-compatible format
-	requestPayload := request{
+	requestPayload := openaiRequest{
 		Model: l.modelID,
-		Messages: []message{
+		Messages: []openaiMessage{
 			{
 				Role:    "user",
 				Content: prompt,
@@ -176,11 +177,13 @@ func (l *LocalProvider) GenerateResponse(ctx context.Context, prompt string, too
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("local LLM API returned status %d", resp.StatusCode)
+		var errBody bytes.Buffer
+		io.Copy(&errBody, resp.Body)
+		return nil, fmt.Errorf("local LLM API returned status %d: %s", resp.StatusCode, errBody.String())
 	}
 
 	// Parse response
-	var openaiResp response
+	var openaiResp openaiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&openaiResp); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
