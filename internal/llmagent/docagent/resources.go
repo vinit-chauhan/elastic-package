@@ -1,4 +1,4 @@
-package docs
+package docagent
 
 import _ "embed"
 

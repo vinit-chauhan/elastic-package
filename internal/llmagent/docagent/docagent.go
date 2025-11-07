@@ -2,7 +2,7 @@
 // or more contributor license agreements. Licensed under the Elastic License;
 // you may not use this file except in compliance with the Elastic License.
 
-package docs
+package docagent
 
 import (
 	"context"
@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/elastic/elastic-package/internal/llmagent/agent"
-	"github.com/elastic/elastic-package/internal/llmagent/mcp"
+	"github.com/elastic/elastic-package/internal/llmagent/framework"
+	"github.com/elastic/elastic-package/internal/llmagent/mcptools"
 	"github.com/elastic/elastic-package/internal/llmagent/providers"
 	"github.com/elastic/elastic-package/internal/llmagent/tools"
 	"github.com/elastic/elastic-package/internal/logger"
@@ -55,7 +55,7 @@ type responseAnalysis struct {
 
 // DocumentationAgent handles documentation updates for packages
 type DocumentationAgent struct {
-	agent                 *agent.Agent
+	agent                 *framework.Agent
 	packageRoot           string
 	targetDocFile         string // Target documentation file (e.g., README.md, vpc.md)
 	profile               *profile.Profile
@@ -86,8 +86,8 @@ func NewDocumentationAgent(provider providers.LLMProvider, packageRoot string, t
 	// Create tools for package operations
 	packageTools := tools.PackageTools(packageRoot)
 
-	// Load the mcp file
-	servers := mcp.MCPTools()
+	// Load the MCP tools
+	servers := mcptools.LoadTools()
 	if servers != nil {
 		for _, srv := range servers.Servers {
 			if len(srv.Tools) > 0 {
@@ -97,7 +97,7 @@ func NewDocumentationAgent(provider providers.LLMProvider, packageRoot string, t
 	}
 
 	// Create the agent
-	llmAgent := agent.NewAgent(provider, packageTools)
+	llmAgent := framework.NewAgent(provider, packageTools)
 
 	manifest, err := packages.ReadPackageManifestFromPackageRoot(packageRoot)
 	if err != nil {
@@ -324,7 +324,7 @@ func (d *DocumentationAgent) runInteractiveMode(ctx context.Context, prompt stri
 }
 
 // logAgentResponse logs debug information about the agent response
-func (d *DocumentationAgent) logAgentResponse(result *agent.TaskResult) {
+func (d *DocumentationAgent) logAgentResponse(result *framework.TaskResult) {
 	logger.Debugf("DEBUG: Full agent task response follows (may contain sensitive content)")
 	logger.Debugf("Agent task response - Success: %t", result.Success)
 	logger.Debugf("Agent task response - FinalContent: %s", result.FinalContent)
@@ -337,7 +337,7 @@ func (d *DocumentationAgent) logAgentResponse(result *agent.TaskResult) {
 }
 
 // executeTaskWithLogging executes a task and logs the result
-func (d *DocumentationAgent) executeTaskWithLogging(ctx context.Context, prompt string) (*agent.TaskResult, error) {
+func (d *DocumentationAgent) executeTaskWithLogging(ctx context.Context, prompt string) (*framework.TaskResult, error) {
 	fmt.Println("🤖 LLM Agent is working...")
 
 	result, err := d.agent.ExecuteTask(ctx, prompt)
@@ -395,7 +395,7 @@ func NewResponseAnalyzer() *responseAnalyzer {
 }
 
 // AnalyzeResponse will detect the LLM state based on it's response to us.
-func (ra *responseAnalyzer) AnalyzeResponse(content string, conversation []agent.ConversationEntry) responseAnalysis {
+func (ra *responseAnalyzer) AnalyzeResponse(content string, conversation []framework.ConversationEntry) responseAnalysis {
 	// Check for empty content
 	if strings.TrimSpace(content) == "" {
 		// Empty content might be okay if recent tools succeeded
@@ -453,7 +453,7 @@ func (ra *responseAnalyzer) containsAnyIndicator(content string, indicators []st
 }
 
 // hasRecentSuccessfulTools checks if recent tool executions were successful
-func (ra *responseAnalyzer) hasRecentSuccessfulTools(conversation []agent.ConversationEntry) bool {
+func (ra *responseAnalyzer) hasRecentSuccessfulTools(conversation []framework.ConversationEntry) bool {
 	// Look at the last 5 conversation entries for tool results
 	lookbackCount := analysisLookbackCount
 	startIdx := len(conversation) - lookbackCount

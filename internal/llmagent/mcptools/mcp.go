@@ -2,7 +2,7 @@
 // or more contributor license agreements. Licensed under the Elastic License;
 // you may not use this file except in compliance with the Elastic License.
 
-package mcp
+package mcptools
 
 import (
 	"context"
@@ -105,8 +105,8 @@ func (s *MCPServer) Connect() error {
 	return nil
 }
 
-// MCPTools loads MCP server configurations and connects to them
-func MCPTools() *MCPJson {
+// LoadTools loads MCP server configurations and connects to them
+func LoadTools() *MCPJson {
 	// what MCP servers can we connect to?
 	// the handler will have a connection to the endpoint already established
 	// we will create an mcp.StreamableClientTransport{Endpoint: url} for each endpoint

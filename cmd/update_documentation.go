@@ -13,7 +13,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/elastic/elastic-package/internal/cobraext"
-	"github.com/elastic/elastic-package/internal/llmagent/docs"
+	"github.com/elastic/elastic-package/internal/llmagent/docagent"
 	"github.com/elastic/elastic-package/internal/llmagent/providers"
 	"github.com/elastic/elastic-package/internal/packages"
 	"github.com/elastic/elastic-package/internal/profile"
@@ -276,7 +276,7 @@ func updateDocumentationCommandAction(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create the documentation agent
-	docAgent, err := docs.NewDocumentationAgent(provider, packageRoot, targetDocFile, profile)
+	docAgent, err := docagent.NewDocumentationAgent(provider, packageRoot, targetDocFile, profile)
 	if err != nil {
 		return fmt.Errorf("failed to create documentation agent: %w", err)
 	}
