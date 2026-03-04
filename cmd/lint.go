@@ -47,13 +47,13 @@ func setupLintCommand() *cobraext.Command {
 func lintCommandAction(cmd *cobra.Command, args []string) error {
 	cmd.Println("Lint the package")
 
-	repositoryRoot, err := files.FindRepositoryRoot()
+	repositoryRoot, err := files.FindRepositoryRootCtx(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("locating repository root failed: %w", err)
 	}
 	defer repositoryRoot.Close()
 
-	packageRoot, err := packages.MustFindPackageRoot()
+	packageRoot, err := packages.MustFindPackageRootCtx(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("package root not found: %w", err)
 	}
@@ -79,7 +79,7 @@ func lintCommandAction(cmd *cobra.Command, args []string) error {
 }
 
 func validateSourceCommandAction(cmd *cobra.Command, args []string) error {
-	packageRoot, err := packages.FindPackageRoot()
+	packageRoot, err := packages.FindPackageRootCtx(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("locating package root failed: %w", err)
 	}

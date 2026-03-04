@@ -5,12 +5,15 @@
 package files
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/elastic/elastic-package/internal/workdir"
 )
 
 func FindRepositoryRoot() (*os.Root, error) {
@@ -19,6 +22,16 @@ func FindRepositoryRoot() (*os.Root, error) {
 		return nil, fmt.Errorf("locating working directory failed: %w", err)
 	}
 	return FindRepositoryRootFrom(workDir)
+}
+
+// FindRepositoryRootCtx finds the repository root using the working directory
+// from the given context, falling back to os.Getwd() if not set.
+func FindRepositoryRootCtx(ctx context.Context) (*os.Root, error) {
+	dir, err := workdir.Dir(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("locating working directory failed: %w", err)
+	}
+	return FindRepositoryRootFrom(dir)
 }
 
 func FindRepositoryRootFrom(workDir string) (*os.Root, error) {

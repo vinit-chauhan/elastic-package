@@ -5,22 +5,27 @@
 package cleanup
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/elastic/elastic-package/internal/configuration/locations"
-	"github.com/elastic/elastic-package/internal/packages"
-
 	"github.com/elastic/elastic-package/internal/logger"
+	"github.com/elastic/elastic-package/internal/packages"
 )
 
 // Stack function removes built package used by the Package Registry image.
 func Stack() (string, error) {
+	return StackCtx(context.Background())
+}
+
+// StackCtx is like Stack but uses the working directory from the given context.
+func StackCtx(ctx context.Context) (string, error) {
 	logger.Debug("Clean built packages from the development stack")
 
-	packageRoot, err := packages.MustFindPackageRoot()
+	packageRoot, err := packages.MustFindPackageRootCtx(ctx)
 	if err != nil {
 		return "", fmt.Errorf("locating package root failed: %w", err)
 	}

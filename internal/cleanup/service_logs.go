@@ -5,6 +5,7 @@
 package cleanup
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -37,9 +38,15 @@ func ServiceLogs() (string, error) {
 
 // ServiceLogsIndependentAgent function removes service logs from temporary directory for independent agents in `~/.elastic-package`.
 func ServiceLogsIndependentAgents(profile *profile.Profile) (string, error) {
+	return ServiceLogsIndependentAgentsCtx(context.Background(), profile)
+}
+
+// ServiceLogsIndependentAgentsCtx is like ServiceLogsIndependentAgents but uses
+// the working directory from the given context.
+func ServiceLogsIndependentAgentsCtx(ctx context.Context, profile *profile.Profile) (string, error) {
 	logger.Debug("Clean all service logs from independent Elastic Agents")
 
-	packageRoot, err := packages.MustFindPackageRoot()
+	packageRoot, err := packages.MustFindPackageRootCtx(ctx)
 	if err != nil {
 		return "", fmt.Errorf("locating package root failed: %w", err)
 	}

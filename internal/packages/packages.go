@@ -7,6 +7,7 @@ package packages
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 	"github.com/elastic/go-ucfg/yaml"
 
 	"github.com/elastic/elastic-package/internal/logger"
+	"github.com/elastic/elastic-package/internal/workdir"
 )
 
 const (
@@ -319,6 +321,26 @@ func FindPackageRoot() (string, error) {
 		return "", fmt.Errorf("locating working directory failed: %w", err)
 	}
 	return FindPackageRootFrom(workDir)
+}
+
+// FindPackageRootCtx finds the package root using the working directory from the
+// given context, falling back to os.Getwd() if not set.
+func FindPackageRootCtx(ctx context.Context) (string, error) {
+	dir, err := workdir.Dir(ctx)
+	if err != nil {
+		return "", fmt.Errorf("locating working directory failed: %w", err)
+	}
+	return FindPackageRootFrom(dir)
+}
+
+// MustFindPackageRootCtx is like MustFindPackageRoot but uses the working
+// directory from the given context.
+func MustFindPackageRootCtx(ctx context.Context) (string, error) {
+	root, err := FindPackageRootCtx(ctx)
+	if err != nil {
+		return "", fmt.Errorf("locating package root failed: %w", err)
+	}
+	return root, nil
 }
 
 var (

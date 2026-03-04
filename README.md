@@ -388,6 +388,8 @@ This command combines query capabilities with command execution, allowing you to
 
 The command uses the same query flags as the 'find' command to select packages, then executes the specified subcommand for each matched package.
 
+Packages are processed concurrently using goroutines.
+
 Allowed subcommands:
 build, check, changelog, clean, format, install, lint, test, uninstall
 

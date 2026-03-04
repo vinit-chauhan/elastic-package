@@ -75,13 +75,13 @@ func installCommandAction(cmd *cobra.Command, _ []string) error {
 
 	if zipPathFile == "" && packageRoot == "" {
 		var err error
-		packageRoot, err = packages.FindPackageRoot()
+		packageRoot, err = packages.FindPackageRootCtx(cmd.Context())
 		if err != nil {
 			return fmt.Errorf("locating package root failed: %w", err)
 		}
 	}
 
-	repositoryRoot, err := files.FindRepositoryRoot()
+	repositoryRoot, err := files.FindRepositoryRootCtx(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("locating repository root failed: %w", err)
 	}

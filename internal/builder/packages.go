@@ -5,6 +5,7 @@
 package builder
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/elastic/elastic-package/internal/logger"
 	"github.com/elastic/elastic-package/internal/packages"
 	"github.com/elastic/elastic-package/internal/validation"
+	"github.com/elastic/elastic-package/internal/workdir"
 )
 
 const builtPackagesDir = "packages"
@@ -58,9 +60,11 @@ func findBuildDirectory() (string, bool, error) {
 	if err != nil {
 		return "", false, fmt.Errorf("can't locate build directory: %w", err)
 	}
+	return findBuildDirectoryFrom(workDir)
+}
 
+func findBuildDirectoryFrom(workDir string) (string, bool, error) {
 	dir := workDir
-	// required for multi platform support
 	root := fmt.Sprintf("%s%c", filepath.VolumeName(dir), os.PathSeparator)
 	for dir != "." {
 		path := filepath.Join(dir, "build")
@@ -75,6 +79,75 @@ func findBuildDirectory() (string, bool, error) {
 		dir = filepath.Dir(dir)
 	}
 	return "", false, nil
+}
+
+// BuildDirectoryCtx is like BuildDirectory but uses the working directory from
+// the given context instead of os.Getwd().
+func BuildDirectoryCtx(ctx context.Context) (string, error) {
+	dir, err := workdir.Dir(ctx)
+	if err != nil {
+		return "", fmt.Errorf("can't locate build directory: %w", err)
+	}
+	buildDir, found, err := findBuildDirectoryFrom(dir)
+	if err != nil {
+		return "", fmt.Errorf("can't locate build directory: %w", err)
+	}
+	if !found {
+		buildDir, err = createBuildDirectoryCtx(ctx)
+		if err != nil {
+			return "", fmt.Errorf("can't create new build directory: %w", err)
+		}
+	}
+	return buildDir, nil
+}
+
+// FindBuildPackagesDirectoryCtx is like FindBuildPackagesDirectory but uses
+// the working directory from the given context.
+func FindBuildPackagesDirectoryCtx(ctx context.Context) (string, bool, error) {
+	dir, err := workdir.Dir(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	buildDir, found, err := findBuildDirectoryFrom(dir)
+	if err != nil {
+		return "", false, err
+	}
+	if found {
+		path := filepath.Join(buildDir, builtPackagesDir)
+		fileInfo, err := os.Stat(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return "", false, nil
+		}
+		if err != nil {
+			return "", false, err
+		}
+		if fileInfo.IsDir() {
+			return path, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func createBuildDirectoryCtx(ctx context.Context, dirs ...string) (string, error) {
+	root, err := files.FindRepositoryRootCtx(ctx)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", errors.New("package can be only built inside of a Git repository (.git folder is used as reference point)")
+	}
+	if err != nil {
+		return "", err
+	}
+	defer root.Close()
+
+	p := []string{root.Name(), "build"}
+	if len(dirs) > 0 {
+		p = append(p, dirs...)
+	}
+	buildDir := filepath.Join(p...)
+	err = os.MkdirAll(buildDir, 0755)
+	if err != nil {
+		return "", fmt.Errorf("mkdir failed (path: %s): %w", buildDir, err)
+	}
+	return buildDir, nil
 }
 
 // BuildPackagesDirectory function locates the target build directory for the package.

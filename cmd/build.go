@@ -60,20 +60,20 @@ func buildCommandAction(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	repositoryRoot, err := files.FindRepositoryRoot()
+	repositoryRoot, err := files.FindRepositoryRootCtx(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("locating repository root failed: %w", err)
 	}
 	defer repositoryRoot.Close()
 
-	packageRoot, err := packages.MustFindPackageRoot()
+	packageRoot, err := packages.MustFindPackageRootCtx(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("locating package root failed: %w", err)
 	}
 
 	// Currently the build directory is placed inside the repository build/ folder.
 	// In the future we might want to make this configurable.
-	buildDir, err := builder.BuildDirectory()
+	buildDir, err := builder.BuildDirectoryCtx(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("can't prepare build directory: %w", err)
 	}

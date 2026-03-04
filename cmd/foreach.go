@@ -5,9 +5,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/spf13/cobra"
 
@@ -15,6 +17,8 @@ import (
 	"github.com/elastic/elastic-package/internal/filter"
 	"github.com/elastic/elastic-package/internal/logger"
 	"github.com/elastic/elastic-package/internal/multierror"
+	"github.com/elastic/elastic-package/internal/packages"
+	"github.com/elastic/elastic-package/internal/workdir"
 )
 
 const foreachLongDescription = `[Technical Preview]
@@ -22,7 +26,9 @@ Execute a command for each package matching the given query flags.
 
 This command combines query capabilities with command execution, allowing you to run any elastic-package subcommand across multiple packages in a single operation.
 
-The command uses the same query flags as the 'find' command to select packages, then executes the specified subcommand for each matched package.`
+The command uses the same query flags as the 'find' command to select packages, then executes the specified subcommand for each matched package.
+
+Packages are processed concurrently using goroutines.`
 
 // getAllowedSubCommands returns the list of allowed subcommands for the foreach command.
 func getAllowedSubCommands() []string {
@@ -61,30 +67,69 @@ func foreachCommandAction(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("validating sub command failed: %w", err)
 	}
 
-	// reuse findPackage from cmd/find.go
 	filtered, err := findPackage(cmd)
 	if err != nil {
 		return fmt.Errorf("filtering packages failed: %w", err)
 	}
 
-	errors := multierror.Error{}
-
-	for _, pkg := range filtered {
-		rootCmd := cmd.Root()
-		rootCmd.SetArgs(append(args, "--change-directory", pkg.Path))
-		if err := rootCmd.Execute(); err != nil {
-			errors = append(errors, err)
-		}
+	if len(filtered) == 0 {
+		logger.Infof("No packages matched the filter criteria")
+		return nil
 	}
 
-	logger.Infof("Successfully executed command for %d packages", len(filtered)-len(errors))
+	logger.Infof("Running command for %d packages", len(filtered))
 
-	if errors.Error() != "" {
-		logger.Errorf("Errors occurred for %d packages", len(errors))
-		return fmt.Errorf("errors occurred while executing command for packages: \n%s", errors.Error())
+	results := runParallel(filtered, args)
+
+	successCount := len(filtered) - len(results)
+	logger.Infof("Successfully executed command for %d packages", successCount)
+
+	if len(results) > 0 {
+		logger.Errorf("Errors occurred for %d packages", len(results))
+		return fmt.Errorf("errors occurred while executing command for packages:\n%s", results.Error())
 	}
 
 	return nil
+}
+
+func runParallel(pkgs []packages.PackageDirNameAndManifest, args []string) multierror.Error {
+	var (
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs multierror.Error
+	)
+
+	for _, pkg := range pkgs {
+		wg.Add(1)
+		go func(pkg packages.PackageDirNameAndManifest) {
+			defer wg.Done()
+
+			logger.Infof("[%s] Executing: %s", pkg.DirName, strings.Join(args, " "))
+
+			if err := executeForPackage(pkg, args); err != nil {
+				mu.Lock()
+				errs = append(errs, fmt.Errorf("package %s: %w", pkg.DirName, err))
+				mu.Unlock()
+			}
+		}(pkg)
+	}
+
+	wg.Wait()
+	return errs
+}
+
+func executeForPackage(pkg packages.PackageDirNameAndManifest, args []string) error {
+	rootCmd := RootCmd()
+
+	ctx := workdir.WithDir(context.Background(), pkg.Path)
+	rootCmd.SetContext(ctx)
+	rootCmd.SetArgs(args)
+
+	// Silence usage and errors — the foreach command handles error reporting.
+	rootCmd.SilenceUsage = true
+	rootCmd.SilenceErrors = true
+
+	return rootCmd.Execute()
 }
 
 func validateSubCommand(subCommand string) error {

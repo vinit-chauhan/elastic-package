@@ -34,7 +34,7 @@ func setupUninstallCommand() *cobraext.Command {
 }
 
 func uninstallCommandAction(cmd *cobra.Command, args []string) error {
-	packageRoot, err := packages.FindPackageRoot()
+	packageRoot, err := packages.FindPackageRootCtx(cmd.Context())
 	if err != nil {
 		return fmt.Errorf("locating package root failed: %w", err)
 	}

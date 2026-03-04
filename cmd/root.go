@@ -14,36 +14,40 @@ import (
 	"github.com/elastic/elastic-package/internal/cobraext"
 	"github.com/elastic/elastic-package/internal/logger"
 	"github.com/elastic/elastic-package/internal/version"
+	"github.com/elastic/elastic-package/internal/workdir"
 )
 
-var commands = []*cobraext.Command{
-	setupBenchmarkCommand(),
-	setupBuildCommand(),
-	setupChangelogCommand(),
-	setupCheckCommand(),
-	setupCleanCommand(),
-	setupCreateCommand(),
-	setupDumpCommand(),
-	setupEditCommand(),
-	setupExportCommand(),
-	setupFindCommand(),
-	setupFormatCommand(),
-	setupForeachCommand(),
-	setupInstallCommand(),
-	setupLinksCommand(),
-	setupLintCommand(),
-	setupModifyCommand(),
-	setupProfilesCommand(),
-	setupReportsCommand(),
-	setupServiceCommand(),
-	setupStackCommand(),
-	setupStatusCommand(),
-	setupTestCommand(),
-	setupUninstallCommand(),
-	setupVersionCommand(),
+func newCommands() []*cobraext.Command {
+	return []*cobraext.Command{
+		setupBenchmarkCommand(),
+		setupBuildCommand(),
+		setupChangelogCommand(),
+		setupCheckCommand(),
+		setupCleanCommand(),
+		setupCreateCommand(),
+		setupDumpCommand(),
+		setupEditCommand(),
+		setupExportCommand(),
+		setupFindCommand(),
+		setupFormatCommand(),
+		setupForeachCommand(),
+		setupInstallCommand(),
+		setupLinksCommand(),
+		setupLintCommand(),
+		setupModifyCommand(),
+		setupProfilesCommand(),
+		setupReportsCommand(),
+		setupServiceCommand(),
+		setupStackCommand(),
+		setupStatusCommand(),
+		setupTestCommand(),
+		setupUninstallCommand(),
+		setupVersionCommand(),
+	}
 }
 
-// RootCmd creates and returns root cmd for elastic-package
+// RootCmd creates and returns root cmd for elastic-package.
+// Each call returns a fresh, independent command tree safe for concurrent use.
 func RootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
 		Use:          "elastic-package",
@@ -59,7 +63,7 @@ func RootCmd() *cobra.Command {
 	rootCmd.PersistentFlags().CountP(cobraext.VerboseFlagName, cobraext.VerboseFlagShorthand, cobraext.VerboseFlagDescription)
 	rootCmd.PersistentFlags().StringP(cobraext.ChangeDirectoryFlagName, cobraext.ChangeDirectoryFlagShorthand, "", cobraext.ChangeDirectoryFlagDescription)
 
-	for _, cmd := range commands {
+	for _, cmd := range newCommands() {
 		rootCmd.AddCommand(cmd.Command)
 	}
 	return rootCmd
@@ -67,11 +71,12 @@ func RootCmd() *cobra.Command {
 
 // Commands returns the list of commands that have been setup for elastic-package.
 func Commands() []*cobraext.Command {
-	sort.SliceStable(commands, func(i, j int) bool {
-		return commands[i].Name() < commands[j].Name()
+	cmds := newCommands()
+	sort.SliceStable(cmds, func(i, j int) bool {
+		return cmds[i].Name() < cmds[j].Name()
 	})
 
-	return commands
+	return cmds
 }
 
 func processPersistentFlags(cmd *cobra.Command, args []string) error {
@@ -83,6 +88,13 @@ func processPersistentFlags(cmd *cobra.Command, args []string) error {
 		logger.EnableDebugMode()
 	} else if verbose > 1 {
 		logger.EnableTraceMode()
+	}
+
+	// When the working directory is already set via context (e.g. by the
+	// foreach command), skip os.Chdir so that concurrent goroutines don't
+	// interfere with each other's working directories.
+	if _, ok := workdir.DirFromContext(cmd.Context()); ok {
+		return nil
 	}
 
 	changeDirectory, err := cmd.Flags().GetString(cobraext.ChangeDirectoryFlagName)
