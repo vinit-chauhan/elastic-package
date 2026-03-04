@@ -307,20 +307,12 @@ func (t *Transform) HasSource(name string) (bool, error) {
 // MustFindPackageRoot finds and returns the path to the root folder of a package.
 // It fails with an error if the package root can't be found.
 func MustFindPackageRoot() (string, error) {
-	root, err := FindPackageRoot()
-	if err != nil {
-		return "", fmt.Errorf("locating package root failed: %w", err)
-	}
-	return root, nil
+	return MustFindPackageRootCtx(context.Background())
 }
 
 // FindPackageRoot finds and returns the path to the root folder of a package from the working directory.
 func FindPackageRoot() (string, error) {
-	workDir, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("locating working directory failed: %w", err)
-	}
-	return FindPackageRootFrom(workDir)
+	return FindPackageRootCtx(context.Background())
 }
 
 // FindPackageRootCtx finds the package root using the working directory from the

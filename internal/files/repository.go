@@ -17,11 +17,7 @@ import (
 )
 
 func FindRepositoryRoot() (*os.Root, error) {
-	workDir, err := os.Getwd()
-	if err != nil {
-		return nil, fmt.Errorf("locating working directory failed: %w", err)
-	}
-	return FindRepositoryRootFrom(workDir)
+	return FindRepositoryRootCtx(context.Background())
 }
 
 // FindRepositoryRootCtx finds the repository root using the working directory

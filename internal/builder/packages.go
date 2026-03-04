@@ -42,25 +42,27 @@ type BuildOptions struct {
 
 // BuildDirectory function locates the target build directory. If the directory doesn't exist, it will create it.
 func BuildDirectory() (string, error) {
-	buildDir, found, err := findBuildDirectory()
+	return BuildDirectoryCtx(context.Background())
+}
+
+// BuildDirectoryCtx is like BuildDirectory but uses the working directory from
+// the given context instead of os.Getwd().
+func BuildDirectoryCtx(ctx context.Context) (string, error) {
+	dir, err := workdir.Dir(ctx)
+	if err != nil {
+		return "", fmt.Errorf("can't locate build directory: %w", err)
+	}
+	buildDir, found, err := findBuildDirectoryFrom(dir)
 	if err != nil {
 		return "", fmt.Errorf("can't locate build directory: %w", err)
 	}
 	if !found {
-		buildDir, err = createBuildDirectory()
+		buildDir, err = createBuildDirectory(ctx)
 		if err != nil {
 			return "", fmt.Errorf("can't create new build directory: %w", err)
 		}
 	}
 	return buildDir, nil
-}
-
-func findBuildDirectory() (string, bool, error) {
-	workDir, err := os.Getwd()
-	if err != nil {
-		return "", false, fmt.Errorf("can't locate build directory: %w", err)
-	}
-	return findBuildDirectoryFrom(workDir)
 }
 
 func findBuildDirectoryFrom(workDir string) (string, bool, error) {
@@ -79,75 +81,6 @@ func findBuildDirectoryFrom(workDir string) (string, bool, error) {
 		dir = filepath.Dir(dir)
 	}
 	return "", false, nil
-}
-
-// BuildDirectoryCtx is like BuildDirectory but uses the working directory from
-// the given context instead of os.Getwd().
-func BuildDirectoryCtx(ctx context.Context) (string, error) {
-	dir, err := workdir.Dir(ctx)
-	if err != nil {
-		return "", fmt.Errorf("can't locate build directory: %w", err)
-	}
-	buildDir, found, err := findBuildDirectoryFrom(dir)
-	if err != nil {
-		return "", fmt.Errorf("can't locate build directory: %w", err)
-	}
-	if !found {
-		buildDir, err = createBuildDirectoryCtx(ctx)
-		if err != nil {
-			return "", fmt.Errorf("can't create new build directory: %w", err)
-		}
-	}
-	return buildDir, nil
-}
-
-// FindBuildPackagesDirectoryCtx is like FindBuildPackagesDirectory but uses
-// the working directory from the given context.
-func FindBuildPackagesDirectoryCtx(ctx context.Context) (string, bool, error) {
-	dir, err := workdir.Dir(ctx)
-	if err != nil {
-		return "", false, err
-	}
-	buildDir, found, err := findBuildDirectoryFrom(dir)
-	if err != nil {
-		return "", false, err
-	}
-	if found {
-		path := filepath.Join(buildDir, builtPackagesDir)
-		fileInfo, err := os.Stat(path)
-		if errors.Is(err, os.ErrNotExist) {
-			return "", false, nil
-		}
-		if err != nil {
-			return "", false, err
-		}
-		if fileInfo.IsDir() {
-			return path, true, nil
-		}
-	}
-	return "", false, nil
-}
-
-func createBuildDirectoryCtx(ctx context.Context, dirs ...string) (string, error) {
-	root, err := files.FindRepositoryRootCtx(ctx)
-	if errors.Is(err, os.ErrNotExist) {
-		return "", errors.New("package can be only built inside of a Git repository (.git folder is used as reference point)")
-	}
-	if err != nil {
-		return "", err
-	}
-	defer root.Close()
-
-	p := []string{root.Name(), "build"}
-	if len(dirs) > 0 {
-		p = append(p, dirs...)
-	}
-	buildDir := filepath.Join(p...)
-	err = os.MkdirAll(buildDir, 0755)
-	if err != nil {
-		return "", fmt.Errorf("mkdir failed (path: %s): %w", buildDir, err)
-	}
-	return buildDir, nil
 }
 
 // BuildPackagesDirectory function locates the target build directory for the package.
@@ -205,7 +138,7 @@ func buildPackagesRootDirectory() (string, error) {
 		return "", fmt.Errorf("can't locate build directory: %w", err)
 	}
 	if !found {
-		buildDir, err = createBuildDirectory(builtPackagesDir)
+		buildDir, err = createBuildDirectory(context.Background(), builtPackagesDir)
 		if err != nil {
 			return "", fmt.Errorf("can't create new build directory: %w", err)
 		}
@@ -215,7 +148,17 @@ func buildPackagesRootDirectory() (string, error) {
 
 // FindBuildPackagesDirectory function locates the target build directory for packages.
 func FindBuildPackagesDirectory() (string, bool, error) {
-	buildDir, found, err := findBuildDirectory()
+	return FindBuildPackagesDirectoryCtx(context.Background())
+}
+
+// FindBuildPackagesDirectoryCtx is like FindBuildPackagesDirectory but uses
+// the working directory from the given context.
+func FindBuildPackagesDirectoryCtx(ctx context.Context) (string, bool, error) {
+	dir, err := workdir.Dir(ctx)
+	if err != nil {
+		return "", false, err
+	}
+	buildDir, found, err := findBuildDirectoryFrom(dir)
 	if err != nil {
 		return "", false, err
 	}
@@ -436,8 +379,8 @@ func copyLicenseTextFile(repositoryRoot *os.Root, targetLicensePath string) erro
 	return nil
 }
 
-func createBuildDirectory(dirs ...string) (string, error) {
-	root, err := files.FindRepositoryRoot()
+func createBuildDirectory(ctx context.Context, dirs ...string) (string, error) {
+	root, err := files.FindRepositoryRootCtx(ctx)
 	if errors.Is(err, os.ErrNotExist) {
 		return "", errors.New("package can be only built inside of a Git repository (.git folder is used as reference point)")
 	}
